@@ -1663,7 +1663,23 @@ class ACTScriber(QMainWindow):
                 if key_name == target_key and not self.recorder.is_recording:
                     print(f"[Hotkey] Recording started with key: {key_name}")
                     self.overlay_status_signal.emit("recording")
+
+                    # Auto-Recovery: Prüfe ob Mikrofon noch verfügbar (Docking Station Szenario)
                     dev_idx = self.config.get("device_index")
+                    dev_name = self.config.get("device_name")
+                    recovered_idx, needs_restart = self.recorder.ensure_device_available(dev_idx, dev_name)
+
+                    if recovered_idx != dev_idx and recovered_idx is not None:
+                        # Gerät hat neue ID bekommen - Config aktualisieren
+                        print(f"[Hotkey] Device ID changed: {dev_idx} -> {recovered_idx}")
+                        self.config.set("device_index", recovered_idx)
+                        dev_idx = recovered_idx
+
+                    if needs_restart and self.recorder._unified_stream:
+                        # Stream neu starten mit korrektem Gerät
+                        self.recorder.stop_monitor()
+                        self.recorder._start_unified_stream(dev_idx)
+
                     self.recorder.start_recording(device_index=dev_idx)
 
             def on_release(key):

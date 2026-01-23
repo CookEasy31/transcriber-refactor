@@ -51,6 +51,8 @@ class AudioRecorder:
         # Unified stream for zero-latency recording
         self._unified_stream = None
         self._current_device_index = None
+        # Für automatische Geräte-Wiederherstellung
+        self._last_device_name = None
 
     def get_input_devices(self):
         """Gibt eine gefilterte Liste relevanter Eingabegeräte zurück: [{'id': 1, 'name': 'Mic X'}]"""
@@ -106,7 +108,7 @@ class AudioRecorder:
     def reload_devices(self):
         """Löscht den Cache und zwingt zum erneuten Einlesen der Geräte"""
         self._devices_cache = None
-        
+
         # Force sounddevice to refresh its internal device list
         sd = _get_sounddevice()
         try:
@@ -115,8 +117,59 @@ class AudioRecorder:
             sd._initialize()
         except:
             pass  # Some versions don't have these methods
-        
+
         return self.get_input_devices()
+
+    def is_device_available(self, device_index):
+        """Prüft, ob ein Gerät mit der gegebenen ID noch verfügbar und funktionsfähig ist"""
+        if device_index is None:
+            return True  # Default device
+
+        sd = _get_sounddevice()
+        try:
+            devices = sd.query_devices()
+            if device_index >= len(devices):
+                return False
+            dev = devices[device_index]
+            return dev["max_input_channels"] > 0
+        except:
+            return False
+
+    def find_device_by_name(self, device_name):
+        """Sucht ein Gerät anhand des Namens und gibt die aktuelle ID zurück"""
+        if not device_name:
+            return None
+
+        devices = self.reload_devices()  # Frische Liste holen
+        for dev in devices:
+            if dev["name"] == device_name:
+                print(f"[Audio] Device '{device_name}' found with new ID: {dev['id']}")
+                return dev["id"]
+        return None
+
+    def ensure_device_available(self, device_index, device_name=None):
+        """
+        Stellt sicher, dass das Gerät verfügbar ist.
+        Bei Docking-Station-Wechsel wird das Gerät per Name wiederhergestellt.
+
+        Returns: (device_id, needs_stream_restart)
+        """
+        # Prüfe ob aktuelles Gerät noch funktioniert
+        if self.is_device_available(device_index):
+            return device_index, False
+
+        print(f"[Audio] Device {device_index} not available, attempting recovery...")
+
+        # Versuche Gerät per Name zu finden (Docking Station Szenario)
+        if device_name:
+            new_id = self.find_device_by_name(device_name)
+            if new_id is not None:
+                print(f"[Audio] Recovered device '{device_name}' at new ID {new_id}")
+                return new_id, True
+
+        # Fallback: Default device verwenden
+        print("[Audio] Device recovery failed, falling back to default device")
+        return None, True
 
     def start_monitor(self, device_index=None):
         """Startet einen Stream nur zur Pegelüberwachung (ohne Aufnahme)"""
