@@ -77,7 +77,7 @@ def print_header():
     print(f"  BUILD: {APP_DISPLAY_NAME} v{VERSION}")
     print("=" * 70)
 
-def print_step(step: int, msg: str):
+def print_step(step, msg: str):
     print(f"\n{'-'*60}")
     print(f"  Schritt {step}: {msg}")
     print(f"{'-'*60}")
@@ -85,19 +85,21 @@ def print_step(step: int, msg: str):
 def sanitize_id(name: str, prefix: str = "") -> str:
     """
     Erstellt stabile, eindeutige WiX-IDs aus Dateinamen.
-    Verwendet MD5-Hash für Eindeutigkeit bei langen Pfaden.
+    Verwendet MD5-Hash des ORIGINALEN Pfads für Eindeutigkeit.
     """
+    # Hash vom ORIGINAL-Namen (vor Sanitierung) für echte Eindeutigkeit
+    name_hash = hashlib.md5(str(name).encode('utf-8')).hexdigest()[:12]
+
     clean_name = re.sub(r'[^A-Za-z0-9_]', '_', str(name))
-    name_hash = hashlib.md5(str(name).encode('utf-8')).hexdigest()[:8]
-    
+
     # ID darf nicht mit Zahl beginnen
     if clean_name and clean_name[0].isdigit():
         clean_name = "_" + clean_name
-    
-    # Max 60 Zeichen + 8 Hash = 68 (unter 72 Limit)
+
+    # Max 50 Zeichen + 12 Hash = 62 (unter 72 Limit)
     if len(clean_name) > 50:
         clean_name = clean_name[:50]
-    
+
     return f"{prefix}{clean_name}_{name_hash}"
 
 def generate_guid() -> str:
@@ -222,7 +224,8 @@ def generate_directory_xml(tree: dict, dir_refs: dict, parent_key: str = "", ind
     spaces = " " * indent
     
     for child_path in tree.get(parent_key, []):
-        dir_id = sanitize_id(str(child_path).replace("/", "_").replace("\\", "_"), "D_")
+        # Verwende ORIGINAL-Pfad für Hash (bevor / und _ identisch werden)
+        dir_id = sanitize_id(str(child_path), "D_")
         dir_refs[child_path] = dir_id
         
         child_key = str(child_path)
@@ -263,9 +266,10 @@ def generate_wxs(build_folder: Path) -> str:
     component_refs = []
     
     for rel_path, full_path in files:
-        path_str = str(rel_path).replace("/", "_").replace("\\", "_")
-        file_id = sanitize_id(path_str, "F_")
-        comp_id = sanitize_id(path_str, "C_")
+        # Verwende ORIGINAL-Pfad für Hash (bevor / und _ identisch werden)
+        original_path = str(rel_path)
+        file_id = sanitize_id(original_path, "F_")
+        comp_id = sanitize_id(original_path, "C_")
         guid = generate_guid()
         
         dir_id = "INSTALLFOLDER"
@@ -494,22 +498,113 @@ def print_summary():
      msiexec /i "{OUTPUT_MSI}" /qn
 """)
 
+def cleanup_build(build_folder: Path):
+    """Entfernt unnötige Dateien um die MSI-Größe zu reduzieren."""
+    print_step("2b", "Bereinige unnötige Dateien")
+
+    pyside_dir = build_folder / "lib" / "PySide6"
+    pyqt_dir = build_folder / "lib" / "PyQt6"
+
+    removed_size = 0
+    removed_count = 0
+
+    # 1. PyQt6 komplett löschen (wir nutzen PySide6)
+    if pyqt_dir.exists():
+        size = sum(f.stat().st_size for f in pyqt_dir.rglob("*") if f.is_file())
+        shutil.rmtree(pyqt_dir, ignore_errors=True)
+        removed_size += size
+        print(f"   OK PyQt6 entfernt ({size / 1024 / 1024:.1f} MB)")
+
+    if pyside_dir.exists():
+        # 2. QML komplett löschen (nicht benötigt)
+        qml_dir = pyside_dir / "qml"
+        if qml_dir.exists():
+            size = sum(f.stat().st_size for f in qml_dir.rglob("*") if f.is_file())
+            shutil.rmtree(qml_dir, ignore_errors=True)
+            removed_size += size
+            print(f"   OK QML entfernt ({size / 1024 / 1024:.1f} MB)")
+
+        # 3. Translations löschen (optional, spart ~8MB)
+        trans_dir = pyside_dir / "translations"
+        if trans_dir.exists():
+            size = sum(f.stat().st_size for f in trans_dir.rglob("*") if f.is_file())
+            shutil.rmtree(trans_dir, ignore_errors=True)
+            removed_size += size
+            print(f"   OK Translations entfernt ({size / 1024 / 1024:.1f} MB)")
+
+        # 4. Unnötige Qt DLLs löschen
+        unnecessary_dlls = [
+            "Qt6WebEngine*.dll", "Qt6Quick*.dll", "Qt6Qml*.dll",
+            "Qt63D*.dll", "Qt6Charts*.dll", "Qt6DataVisualization*.dll",
+            "Qt6Designer*.dll", "Qt6Help*.dll", "Qt6Location*.dll",
+            "Qt6Multimedia*.dll", "Qt6Pdf*.dll", "Qt6Positioning*.dll",
+            "Qt6RemoteObjects*.dll", "Qt6Scxml*.dll", "Qt6Sensors*.dll",
+            "Qt6SerialPort*.dll", "Qt6ShaderTools*.dll", "Qt6Sql*.dll",
+            "Qt6Test*.dll", "Qt6Bluetooth*.dll", "Qt6Nfc*.dll",
+            "Qt6WebChannel*.dll", "Qt6WebSockets*.dll", "Qt6Xml*.dll",
+            "Qt6Graphs*.dll", "Qt6OpenGL*.dll",
+        ]
+
+        import glob
+        for pattern in unnecessary_dlls:
+            for dll_path in pyside_dir.glob(pattern):
+                if dll_path.is_file():
+                    size = dll_path.stat().st_size
+                    dll_path.unlink()
+                    removed_size += size
+                    removed_count += 1
+
+        print(f"   OK {removed_count} unnötige DLLs entfernt")
+
+        # 5. Unnötige Plugins löschen
+        plugins_dir = pyside_dir / "plugins"
+        if plugins_dir.exists():
+            unnecessary_plugins = [
+                "qmltooling", "webview", "multimedia", "position",
+                "sensors", "sqldrivers", "designer", "scxmls",
+                "qml*", "virtualkeyboard", "canbus", "geoservices",
+                "sceneparsers", "renderers", "geometryloaders",
+            ]
+            for plugin_name in unnecessary_plugins:
+                for plugin_dir in plugins_dir.glob(plugin_name):
+                    if plugin_dir.is_dir():
+                        size = sum(f.stat().st_size for f in plugin_dir.rglob("*") if f.is_file())
+                        shutil.rmtree(plugin_dir, ignore_errors=True)
+                        removed_size += size
+
+            print(f"   OK Unnötige Plugins entfernt")
+
+    # 6. Unnötige lib-Ordner
+    unnecessary_libs = ["pygments", "pydantic", "pydantic_core", "rich"]
+    for lib_name in unnecessary_libs:
+        lib_dir = build_folder / "lib" / lib_name
+        if lib_dir.exists():
+            size = sum(f.stat().st_size for f in lib_dir.rglob("*") if f.is_file())
+            shutil.rmtree(lib_dir, ignore_errors=True)
+            removed_size += size
+
+    print(f"   OK Gesamt entfernt: {removed_size / 1024 / 1024:.1f} MB")
+
+
 def main():
     print_header()
-    
+
     # Pruefe Voraussetzungen
     if not LICENSE_PATH.exists():
         print(f"   WARNUNG: license.rtf nicht gefunden - wird fuer WixUI benoetigt!")
         sys.exit(1)
-    
+
     # 1. Clean
     clean_build()
-    
+
     # 2. cx_Freeze
     run_cx_freeze()
-    
+
     # Finde Build-Ordner
     build_folder = find_build_folder()
+
+    # 2b. Cleanup - entferne unnötige Dateien
+    cleanup_build(build_folder)
 
     # 3. Erstelle .env Datei
     create_env_file(build_folder)
