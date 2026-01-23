@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.wav
+*.mp3
+*.m4a
+*.log
+.lock
+
+# Secrets - NEVER commit!
+.env
+
+# Old/archived folders
+_old_customtkinter/
+Referenzprojekt/
+.wix/
+startup_log.txt

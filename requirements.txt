@@ -1,0 +1,12 @@
+PySide6>=6.5.0
+qtawesome>=1.2.0
+sounddevice
+numpy
+pynput
+pyperclip
+pyautogui
+groq
+Pillow
+packaging
+psutil
+python-dotenv
