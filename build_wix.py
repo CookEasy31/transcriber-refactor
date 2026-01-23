@@ -136,6 +136,32 @@ def run_cx_freeze():
     
     print("   OK Executable erstellt")
 
+def create_env_file(build_folder: Path):
+    """Erstellt .env Datei mit API-Key im Build-Ordner"""
+    print_step(3, "Erstelle .env Datei")
+
+    # API Key - NUR lokal beim Build, NICHT im Git-Repo!
+    api_key = os.getenv("GROQ_API_KEY", "")
+    if not api_key:
+        # Fallback: Aus lokaler .env lesen
+        env_path = BASE_PATH / ".env"
+        if env_path.exists():
+            with open(env_path, "r") as f:
+                for line in f:
+                    if line.startswith("GROQ_API_KEY="):
+                        api_key = line.strip().split("=", 1)[1]
+                        break
+
+    if not api_key:
+        print("   WARNUNG: Kein GROQ_API_KEY gefunden! .env wird leer sein.")
+
+    env_content = f"GROQ_API_KEY={api_key}\n"
+    env_file = build_folder / ".env"
+    with open(env_file, "w") as f:
+        f.write(env_content)
+
+    print(f"   OK .env erstellt (Key: {'*' * 10}...)")
+
 def find_build_folder() -> Path:
     build_dir = BASE_PATH / "build"
     
@@ -212,7 +238,7 @@ def generate_directory_xml(tree: dict, dir_refs: dict, parent_key: str = "", ind
     return "\n".join(xml_parts)
 
 def generate_wxs(build_folder: Path) -> str:
-    print_step(3, "Generiere WiX-Konfiguration")
+    print_step(4, "Generiere WiX-Konfiguration")
     
     files = collect_files(build_folder)
     print(f"   OK {len(files)} Dateien gefunden")
@@ -409,7 +435,7 @@ def generate_wxs(build_folder: Path) -> str:
     return str(wxs_path)
 
 def run_wix_build(build_folder: Path):
-    print_step(4, "Erstelle MSI (WiX)")
+    print_step(5, "Erstelle MSI (WiX)")
     
     # WiX build Command mit UI Extension
     cmd = [
@@ -482,16 +508,19 @@ def main():
     # 2. cx_Freeze
     run_cx_freeze()
     
-    # 3. Finde Build-Ordner
+    # Finde Build-Ordner
     build_folder = find_build_folder()
-    
+
+    # 3. Erstelle .env Datei
+    create_env_file(build_folder)
+
     # 4. Generiere WXS
     generate_wxs(build_folder)
-    
+
     # 5. WiX Build
     run_wix_build(build_folder)
-    
-    # 6. Zusammenfassung
+
+    # Zusammenfassung
     print_summary()
 
 if __name__ == "__main__":
