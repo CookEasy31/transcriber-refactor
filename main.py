@@ -823,10 +823,10 @@ class ACTScriber(QMainWindow):
         # Erster Update-Check nach 3 Sekunden (App erst starten lassen)
         QTimer.singleShot(3000, self.check_for_updates_async)
 
-        # Regelmäßiger Update-Check alle 30 Minuten
+        # Regelmäßiger Update-Check jede Minute
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.check_for_updates_async)
-        self.update_timer.start(30 * 60 * 1000)  # 30 Minuten in ms
+        self.update_timer.start(60 * 1000)  # 1 Minute in ms
 
     def check_for_updates_async(self):
         """Startet Update-Check im Hintergrund"""
@@ -848,17 +848,11 @@ class ACTScriber(QMainWindow):
             return
 
         print(f"[Updater] Update available: {result['current_version']} -> {result['latest_version']}")
-        print(f"[Updater] Force update: {result['is_force']}")
 
         self.pending_update = result
 
-        if result.get('is_force'):
-            # Force Update - sofort starten
-            self.force_update_signal.emit(result)
-        else:
-            # Optionales Update - speichern und UI aktualisieren
-            self.pending_update = result
-            self.update_available_signal.emit(result)
+        # Alle Updates werden automatisch installiert (kein User-Klick nötig)
+        self.force_update_signal.emit(result)
 
     def _on_update_available(self, update_info):
         """Optionales Update verfügbar - UI in Settings aktualisieren"""

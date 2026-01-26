@@ -37,3 +37,9 @@ _old_customtkinter/
 Referenzprojekt/
 .wix/
 startup_log.txt
+
+# Build artifacts
+*.msi
+*.wixpdb
+Package.wxs
+tmpclaude-*
