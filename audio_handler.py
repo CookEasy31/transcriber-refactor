@@ -405,6 +405,107 @@ class AudioRecorder:
         print(f"[Audio] Saved: {self.filename} ({file_size} bytes)")
         return self.filename
 
+    def check_device_health(self):
+        """
+        Prüft ob das Audio-Device noch funktioniert (z.B. nach Energiesparmodus).
+
+        Returns:
+            dict: {
+                'healthy': bool,
+                'recovered': bool,
+                'message': str,
+                'device_id': int or None
+            }
+        """
+        result = {
+            'healthy': True,
+            'recovered': False,
+            'message': 'OK',
+            'device_id': self._current_device_index
+        }
+
+        # Kein Stream aktiv - nichts zu prüfen
+        if not self._unified_stream:
+            result['healthy'] = False
+            result['message'] = 'Kein Audio-Stream aktiv'
+            return result
+
+        sd = _get_sounddevice()
+
+        # Prüfe ob der Stream noch aktiv ist
+        try:
+            stream_active = self._unified_stream.active
+        except Exception as e:
+            stream_active = False
+            print(f"[Audio] Stream check failed: {e}")
+
+        if not stream_active:
+            print("[Audio] Health check: Stream inactive, attempting recovery...")
+            result['healthy'] = False
+            result['message'] = 'Stream inaktiv'
+
+            # Versuche Recovery
+            try:
+                # Stream schließen falls noch offen
+                try:
+                    self._unified_stream.stop()
+                    self._unified_stream.close()
+                except:
+                    pass
+                self._unified_stream = None
+
+                # Neuen Stream starten
+                new_device = self._start_unified_stream(
+                    self._current_device_index,
+                    self._last_device_name
+                )
+
+                if new_device is not None:
+                    result['recovered'] = True
+                    result['healthy'] = True
+                    result['device_id'] = new_device
+                    result['message'] = f'Wiederhergestellt auf Device {new_device}'
+                    print(f"[Audio] Health check: Recovered on device {new_device}")
+                else:
+                    result['message'] = 'Wiederherstellung fehlgeschlagen'
+                    print("[Audio] Health check: Recovery failed!")
+
+            except Exception as e:
+                result['message'] = f'Recovery-Fehler: {e}'
+                print(f"[Audio] Health check recovery error: {e}")
+
+            return result
+
+        # Stream aktiv - prüfe ob Device noch existiert
+        if self._current_device_index is not None:
+            if not self.is_device_available(self._current_device_index):
+                print(f"[Audio] Health check: Device {self._current_device_index} no longer available")
+                result['healthy'] = False
+                result['message'] = f'Device {self._current_device_index} nicht mehr verfügbar'
+
+                # Versuche Recovery auf anderem Device
+                try:
+                    self.stop_monitor()
+                    new_device = self._start_unified_stream(
+                        self._current_device_index,
+                        self._last_device_name
+                    )
+
+                    if new_device is not None:
+                        result['recovered'] = True
+                        result['healthy'] = True
+                        result['device_id'] = new_device
+                        result['message'] = f'Gewechselt zu Device {new_device}'
+                        print(f"[Audio] Health check: Switched to device {new_device}")
+                    else:
+                        result['message'] = 'Kein funktionierendes Device gefunden'
+
+                except Exception as e:
+                    result['message'] = f'Wechsel-Fehler: {e}'
+                    print(f"[Audio] Health check switch error: {e}")
+
+        return result
+
     def close(self):
         """Schließt den Recorder und gibt Ressourcen frei."""
         self.stop_monitor()

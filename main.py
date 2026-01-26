@@ -1823,6 +1823,43 @@ class ACTScriber(QMainWindow):
         self.audio_monitor_timer.timeout.connect(self.update_audio_level)
         self.audio_monitor_timer.start(50)  # 20 FPS
 
+        # Device Health Check Timer (für Energiesparmodus-Recovery)
+        self.device_health_timer = QTimer()
+        self.device_health_timer.timeout.connect(self.check_audio_device_health)
+        self.device_health_timer.start(10000)  # Alle 10 Sekunden
+
+    def check_audio_device_health(self):
+        """Prüft periodisch ob das Audio-Device noch funktioniert (Energiesparmodus-Recovery)"""
+        if not hasattr(self, 'recorder') or self.recorder is None:
+            return
+
+        # Nicht prüfen während aktiver Aufnahme
+        if self.recorder.is_recording:
+            return
+
+        try:
+            result = self.recorder.check_device_health()
+
+            if result['recovered']:
+                # Device wurde gewechselt - Log und ggf. UI-Update
+                self.data.log(
+                    f"[Audio] Device automatisch wiederhergestellt: {result['message']}",
+                    "info"
+                )
+                # Optional: Status-Anzeige aktualisieren falls vorhanden
+                if hasattr(self, 'status_label'):
+                    self.status_label.setText(f"Mikrofon wiederhergestellt")
+
+            elif not result['healthy']:
+                # Problem erkannt aber nicht behoben
+                self.data.log(
+                    f"[Audio] Device-Problem: {result['message']}",
+                    "warning"
+                )
+
+        except Exception as e:
+            self.data.log(f"[Audio] Health check error: {e}", "error")
+
     def update_audio_level(self):
         """Aktualisiert die Audio-Pegel Anzeige (Live + Recording)"""
         if hasattr(self, 'audio_level_bar'):
@@ -2334,6 +2371,8 @@ class ACTScriber(QMainWindow):
         try:
             if hasattr(self, 'audio_monitor_timer'):
                 self.audio_monitor_timer.stop()
+            if hasattr(self, 'device_health_timer'):
+                self.device_health_timer.stop()
             if hasattr(self, 'listener') and self.listener:
                 self.listener.stop()
             if hasattr(self, 'tray_icon') and self.tray_icon:
