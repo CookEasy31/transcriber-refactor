@@ -70,8 +70,23 @@ def get_icon_path():
     return get_asset_path("icon.ico")
 
 
-# Color Scheme - Modern Executive
-COLORS = {
+def is_dark_mode():
+    """Erkennt Windows Dark Mode über Registry"""
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        )
+        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        winreg.CloseKey(key)
+        return value == 0  # 0 = Dark Mode, 1 = Light Mode
+    except Exception:
+        return False  # Fallback: Light Mode
+
+
+# Color Schemes - Modern Executive
+COLORS_LIGHT = {
     "primary": "#374151",
     "accent": "#DC2626",
     "success": "#059669",
@@ -80,9 +95,37 @@ COLORS = {
     "text_light": "#6B7280",
     "bg_sidebar": "#F9FAFB",
     "bg_main": "#FFFFFF",
+    "bg_card": "#FFFFFF",
+    "bg_input": "#FFFFFF",
+    "bg_elevated": "#FAFAFA",
     "border": "#E5E7EB",
     "active_bg": "#F3F4F6",
 }
+
+COLORS_DARK = {
+    "primary": "#60A5FA",      # Helleres Blau für Dark Mode
+    "accent": "#F87171",       # Helleres Rot
+    "success": "#34D399",      # Helleres Grün
+    "warning": "#FBBF24",      # Helleres Orange
+    "text_dark": "#F9FAFB",    # Fast weiß für Text
+    "text_light": "#9CA3AF",   # Mittleres Grau
+    "bg_sidebar": "#1F2937",   # Dunkles Grau
+    "bg_main": "#111827",      # Sehr dunkel
+    "bg_card": "#1F2937",      # Dunkle Karten
+    "bg_input": "#374151",     # Input-Felder
+    "bg_elevated": "#374151",  # Erhöhte Elemente
+    "border": "#374151",       # Dunklere Borders
+    "active_bg": "#374151",    # Hover-States
+}
+
+
+def get_colors():
+    """Gibt das passende Farbschema basierend auf System-Theme zurück"""
+    return COLORS_DARK if is_dark_mode() else COLORS_LIGHT
+
+
+# Legacy-Kompatibilität
+COLORS = get_colors()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -248,7 +291,7 @@ class ForceUpdateDialog(QDialog):
             notes_preview = release_notes[:200] + "..." if len(release_notes) > 200 else release_notes
             notes_label = QLabel(notes_preview)
             notes_label.setFont(QFont("Segoe UI", 10))
-            notes_label.setStyleSheet("color: #6B7280; background: #F3F4F6; padding: 10px; border-radius: 6px;")
+            notes_label.setStyleSheet(f"color: {self.colors['text_light']}; background: {self.colors['active_bg']}; padding: 10px; border-radius: 6px;")
             notes_label.setWordWrap(True)
             layout.addWidget(notes_label)
 
@@ -264,7 +307,7 @@ class ForceUpdateDialog(QDialog):
         # Status Label
         self.status_label = QLabel("Verbinde mit Server...")
         self.status_label.setFont(QFont("Segoe UI", 10))
-        self.status_label.setStyleSheet("color: #6B7280;")
+        self.status_label.setStyleSheet(f"color: {self.colors['text_light']};")
         layout.addWidget(self.status_label)
 
     def set_progress(self, percent):
@@ -389,13 +432,13 @@ class CustomButtonManagerDialog(QDialog):
         
         if not buttons_data:
             empty_label = QLabel("Keine Custom Buttons vorhanden.")
-            empty_label.setStyleSheet("color: #6B7280; font-style: italic;")
+            empty_label.setStyleSheet(f"color: {self.colors['text_light']}; font-style: italic;")
             self.list_layout.addWidget(empty_label)
             return
 
         for idx, btn_data in enumerate(buttons_data):
             row = QFrame()
-            row.setStyleSheet("background: #F9FAFB; border-radius: 8px; border: 1px solid #E5E7EB;")
+            row.setStyleSheet(f"background: {self.colors['bg_sidebar']}; border-radius: 8px; border: 1px solid {self.colors['border']};")
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(12, 8, 12, 8)
 
@@ -419,7 +462,7 @@ class CustomButtonManagerDialog(QDialog):
 
             # Delete Button
             del_btn = QPushButton()
-            del_btn.setIcon(qta.icon('fa5s.trash-alt', color="#DC2626"))
+            del_btn.setIcon(qta.icon('fa5s.trash-alt', color=self.colors["accent"]))
             del_btn.setFixedSize(32, 32)
             del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             del_btn.setToolTip("Löschen")
@@ -529,21 +572,172 @@ class MaterialCard(QFrame):
     def __init__(self, elevation=2):
         super().__init__()
         self.setObjectName("MaterialCard")
+        
+        colors = get_colors()
+        shadow_alpha = 10 if is_dark_mode() else 20
 
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(elevation * 4)
         shadow.setXOffset(0)
         shadow.setYOffset(elevation * 1.5)
-        shadow.setColor(QColor(0, 0, 0, 20))
+        shadow.setColor(QColor(0, 0, 0, shadow_alpha))
         self.setGraphicsEffect(shadow)
 
-        self.setStyleSheet("""
-            #MaterialCard {
-                background-color: white;
+        self.setStyleSheet(f"""
+            #MaterialCard {{
+                background-color: {colors['bg_card']};
                 border-radius: 10px;
                 padding: 20px;
-            }
+                border: 1px solid {colors['border']};
+            }}
         """)
+
+
+
+
+# ═══════════════════════════════════════════════════════════════
+# MICROPHONE TEST DIALOG
+# ═══════════════════════════════════════════════════════════════
+
+class MicrophoneTestDialog(QDialog):
+    """Dialog zum Testen aller Mikrofone mit Live-Level-Anzeige"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Mikrofone testen")
+        self.setMinimumSize(500, 400)
+        self.setModal(True)
+        
+        self.colors = get_colors()
+        self.streams = []
+        self.level_bars = {}
+        self.running = True
+        
+        self.setup_ui()
+        self.start_monitoring()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        
+        # Header
+        header = QLabel("Sprechen Sie in Ihr Mikrofon um es zu testen")
+        header.setFont(QFont("Segoe UI", 12))
+        header.setStyleSheet(f"color: {self.colors['text_light']};")
+        layout.addWidget(header)
+        
+        # Scroll area for devices
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_content = QWidget()
+        self.devices_layout = QVBoxLayout(scroll_content)
+        self.devices_layout.setSpacing(8)
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll)
+        
+        # Close button
+        close_btn = QPushButton("Schließen")
+        close_btn.setObjectName("ActionButton")
+        close_btn.setProperty("button_style", "primary")
+        close_btn.clicked.connect(self.close)
+        close_btn.setMinimumHeight(40)
+        layout.addWidget(close_btn)
+        
+        # Load devices
+        self.load_devices()
+        
+    def load_devices(self):
+        import sounddevice as sd
+        devices = sd.query_devices()
+        
+        for i, dev in enumerate(devices):
+            if dev["max_input_channels"] > 0:
+                # Skip irrelevant devices
+                name_lower = dev["name"].lower()
+                if any(kw in name_lower for kw in ["stereo mix", "output", "loopback", "virtual"]):
+                    continue
+                    
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(8, 4, 8, 4)
+                
+                # Device name
+                name_label = QLabel(dev["name"][:40] + ("..." if len(dev["name"]) > 40 else ""))
+                name_label.setFont(QFont("Segoe UI", 10))
+                name_label.setFixedWidth(250)
+                name_label.setToolTip(dev["name"])
+                row_layout.addWidget(name_label)
+                
+                # Level bar
+                level_bar = QProgressBar()
+                level_bar.setMinimum(0)
+                level_bar.setMaximum(100)
+                level_bar.setValue(0)
+                level_bar.setTextVisible(False)
+                level_bar.setMinimumHeight(16)
+                level_bar.setStyleSheet(f"""
+                    QProgressBar {{
+                        border: 1px solid {self.colors['border']};
+                        border-radius: 4px;
+                        background-color: {self.colors['bg_elevated']};
+                    }}
+                    QProgressBar::chunk {{
+                        background-color: {self.colors['success']};
+                        border-radius: 3px;
+                    }}
+                """)
+                row_layout.addWidget(level_bar)
+                
+                self.level_bars[i] = level_bar
+                self.devices_layout.addWidget(row)
+        
+        self.devices_layout.addStretch()
+        
+    def start_monitoring(self):
+        import sounddevice as sd
+        import numpy as np
+        
+        def make_callback(device_id, level_bar):
+            def callback(indata, frames, time_info, status):
+                if self.running and indata.size > 0:
+                    rms = float(np.sqrt(np.mean(indata**2)))
+                    level = min(int(rms * 1000), 100)  # Scale to 0-100
+                    # Use QTimer to update UI from main thread
+                    QTimer.singleShot(0, lambda: level_bar.setValue(level) if self.running else None)
+            return callback
+        
+        for device_id, level_bar in self.level_bars.items():
+            try:
+                stream = sd.InputStream(
+                    samplerate=16000,
+                    device=device_id,
+                    channels=1,
+                    callback=make_callback(device_id, level_bar)
+                )
+                stream.start()
+                self.streams.append(stream)
+            except Exception as e:
+                # Mark device as unavailable
+                level_bar.setStyleSheet(f"""
+                    QProgressBar {{
+                        border: 1px solid {self.colors['accent']};
+                        border-radius: 4px;
+                        background-color: {self.colors['bg_elevated']};
+                    }}
+                """)
+                level_bar.setFormat("Nicht verfügbar")
+                level_bar.setTextVisible(True)
+                
+    def closeEvent(self, event):
+        self.running = False
+        for stream in self.streams:
+            try:
+                stream.stop()
+                stream.close()
+            except:
+                pass
+        self.streams.clear()
+        super().closeEvent(event)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -670,7 +864,7 @@ class ACTScriber(QMainWindow):
         if hasattr(self, 'update_status_label'):
             version = update_info.get('latest_version', '?')
             self.update_status_label.setText(f"Version {version} verfügbar!")
-            self.update_status_label.setStyleSheet("color: #059669; font-weight: bold;")
+            self.update_status_label.setStyleSheet(f"color: {self.colors['success']}; font-weight: bold;")
             self.update_btn.setVisible(True)
             self.update_btn.setEnabled(True)
 
@@ -910,7 +1104,7 @@ class ACTScriber(QMainWindow):
         # Monitor in Settings starten/stoppen + Geräteliste aktualisieren
         if view_id == "settings":
             self.refresh_devices()  # Geräteliste bei jedem Öffnen aktualisieren
-            self.recorder.start_monitor(device_index=self.config.get("device_index"))
+            self.recorder.start_monitor(device_index=self.config.get("device_index"), device_name=self.config.get("device_name"))
         else:
             self.recorder.stop_monitor()
 
@@ -1443,6 +1637,17 @@ class ACTScriber(QMainWindow):
         refresh_mic_btn.setObjectName("HotkeyButton")  # Reuse style
         refresh_mic_btn.clicked.connect(self.refresh_devices)
         mic_row.addWidget(refresh_mic_btn)
+        
+        # Test All Button
+        test_all_btn = QPushButton("Alle testen")
+        test_all_btn.setIcon(qta.icon('fa5s.volume-up', color=self.colors['primary']))
+        test_all_btn.setIconSize(QSize(14, 14))
+        test_all_btn.setMinimumHeight(36)
+        test_all_btn.setToolTip("Alle Mikrofone gleichzeitig testen")
+        test_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_all_btn.setObjectName("HotkeyButton")
+        test_all_btn.clicked.connect(self.show_mic_test_dialog)
+        mic_row.addWidget(test_all_btn)
         mic_row.addStretch()  # Keep it compact
         
         audio_layout.addLayout(mic_row)
@@ -1584,7 +1789,7 @@ class ACTScriber(QMainWindow):
 
         self.update_status_label = QLabel("Keine Updates verfügbar")
         self.update_status_label.setFont(QFont("Segoe UI", 11))
-        self.update_status_label.setStyleSheet("color: #6B7280;")
+        self.update_status_label.setStyleSheet(f"color: {self.colors['text_light']};")
         update_row.addWidget(self.update_status_label)
 
         update_row.addStretch()
@@ -1849,7 +2054,7 @@ class ACTScriber(QMainWindow):
         # Monitor neu starten mit neuem Gerät falls aktiv
         if self.settings_view.isVisible():
             self.recorder.stop_monitor()
-            self.recorder.start_monitor(device_index=device_id)
+            self.recorder.start_monitor(device_index=device_id, device_name=self.config.get("device_name"))
 
     def refresh_devices(self):
         """Lädt Geräteliste neu und stellt Auswahl wieder her"""
@@ -1887,6 +2092,21 @@ class ACTScriber(QMainWindow):
         
         self.mic_combo.blockSignals(False)
 
+    def show_mic_test_dialog(self):
+        """Öffnet den Dialog zum Testen aller Mikrofone"""
+        # Stop current monitor to free resources
+        self.recorder.stop_monitor()
+        
+        dialog = MicrophoneTestDialog(self)
+        dialog.exec()
+        
+        # Restart monitor after dialog closes
+        self.recorder.start_monitor(
+            device_index=self.config.get("device_index"),
+            device_name=self.config.get("device_name")
+        )
+
+
     def save_sensitivity(self, value):
         """Speichert Audio-Sensitivität"""
         sens = value / 10000.0
@@ -1906,7 +2126,7 @@ class ACTScriber(QMainWindow):
             self.is_setting_hotkey = True
         self.hotkey_btn.setText("Drücke eine Taste...")
         self.hotkey_info_label.setText("Warte auf Tastendruck...")
-        self.hotkey_info_label.setStyleSheet("color: #2563EB;")
+        self.hotkey_info_label.setStyleSheet(f"color: {self.colors['primary']};")
 
     # ═══════════════════════════════════════════════════════════════
     # HOTKEY LISTENER
@@ -1960,7 +2180,7 @@ class ACTScriber(QMainWindow):
                     if needs_restart and self.recorder._unified_stream:
                         # Stream neu starten mit korrektem Gerät
                         self.recorder.stop_monitor()
-                        self.recorder._start_unified_stream(dev_idx)
+                        self.recorder._start_unified_stream(dev_idx, dev_name)
 
                     self.recorder.start_recording(device_index=dev_idx)
 
@@ -2006,7 +2226,7 @@ class ACTScriber(QMainWindow):
         display_name = key_name.upper().replace("_", " + ")
         self.hotkey_btn.setText(f"Aktuell: {display_name}")
         self.hotkey_info_label.setText("Gespeichert!")
-        self.hotkey_info_label.setStyleSheet("color: #059669;")
+        self.hotkey_info_label.setStyleSheet(f"color: {self.colors['success']};")
         self.hotkey_badge.setText(display_name)
 
     def _on_overlay_status(self, status):
@@ -2024,7 +2244,7 @@ class ACTScriber(QMainWindow):
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setWindowTitle("🎤 Kein Audio erkannt")
         msg.setText(
-            "<h3 style='color: #DC2626;'>Keine Audiosignale erkannt</h3>"
+            f"<h3 style='color: {self.colors['accent']};'><b>Keine Audiosignale erkannt</b></h3>"
             "<p>Die Aufnahme enthielt keinen erkennbaren Ton.</p>"
         )
         msg.setInformativeText(
@@ -2215,7 +2435,7 @@ class ACTScriber(QMainWindow):
                 border-radius: 8px;
                 padding: 10px 14px;
                 padding-right: 36px;
-                background-color: white;
+                background-color: {c['bg_input']};
                 color: {c['text_dark']};
             }}
             #StyledCombo:hover {{
@@ -2255,7 +2475,7 @@ class ACTScriber(QMainWindow):
                 border: 1px solid {c['border']};
                 border-radius: 8px;
                 padding: 10px 12px;
-                background-color: white;
+                background-color: {c['bg_input']};
                 color: {c['text_dark']};
             }}
             #InstructionInput:focus, #SettingsInput:focus {{
@@ -2327,13 +2547,13 @@ class ACTScriber(QMainWindow):
                 border: 1px solid {c['border']};
                 border-radius: 8px;
                 padding: 12px;
-                background-color: #FAFAFA;
+                background-color: {c['bg_elevated']};
                 color: {c['text_dark']};
                 line-height: 1.5;
             }}
 
             #HotkeyButton {{
-                background-color: white;
+                background-color: {c['bg_input']};
                 color: {c['text_dark']};
                 border: 1px solid {c['border']};
                 border-radius: 8px;
@@ -2351,7 +2571,7 @@ class ACTScriber(QMainWindow):
             #HistoryTable {{
                 border: 1px solid {c['border']};
                 border-radius: 8px;
-                background-color: white;
+                background-color: {c['bg_input']};
             }}
             #HistoryTable::item {{
                 padding: 8px;

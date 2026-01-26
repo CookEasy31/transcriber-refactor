@@ -54,8 +54,12 @@ class AudioRecorder:
         # Für automatische Geräte-Wiederherstellung
         self._last_device_name = None
 
-    def get_input_devices(self):
-        """Gibt eine gefilterte Liste relevanter Eingabegeräte zurück: [{'id': 1, 'name': 'Mic X'}]"""
+    def get_input_devices(self, test_functionality=True):
+        """Gibt eine gefilterte Liste relevanter Eingabegeräte zurück: [{'id': 1, 'name': 'Mic X'}]
+        
+        Args:
+            test_functionality: Wenn True, werden nur Geräte zurückgegeben die tatsächlich funktionieren
+        """
         # Cache verwenden für schnelleren wiederholten Zugriff
         if self._devices_cache is not None:
             return self._devices_cache
@@ -99,11 +103,35 @@ class AudioRecorder:
                 if len(name.strip()) < 3:
                     continue
                 
+                # Funktionalitätstest: Gerät muss sich öffnen lassen
+                if test_functionality:
+                    if not self._test_device(i):
+                        print(f"[Audio] Device {i} '{name}' nicht verfügbar - übersprungen")
+                        continue
+                
                 seen_names.add(name)
                 input_devices.append({"id": i, "name": name})
         
         self._devices_cache = input_devices
         return input_devices
+    
+    def _test_device(self, device_index):
+        """Testet ob ein Gerät tatsächlich geöffnet werden kann"""
+        sd = _get_sounddevice()
+        try:
+            # Versuche kurz einen Stream zu öffnen
+            stream = sd.InputStream(
+                samplerate=16000,
+                device=device_index,
+                channels=1,
+                blocksize=1024
+            )
+            stream.start()
+            stream.stop()
+            stream.close()
+            return True
+        except Exception:
+            return False
 
     def reload_devices(self):
         """Löscht den Cache und zwingt zum erneuten Einlesen der Geräte"""
@@ -233,29 +261,64 @@ class AudioRecorder:
         if self._current_device_index is not None:
             self._start_unified_stream(self._current_device_index)
 
-    def _start_unified_stream(self, device_index):
-        """Startet den unified stream auf einem Gerät"""
+    def _start_unified_stream(self, device_index, device_name=None):
+        """Startet den unified stream auf einem Gerät mit automatischem Fallback"""
         sd = _get_sounddevice()
-        try:
-            self._unified_stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                device=device_index,
-                channels=1,
-                callback=self._unified_callback
-            )
-            self._unified_stream.start()
-            self._current_device_index = device_index
-            print(f"[Audio] Unified stream started on device {device_index}")
-        except Exception as e:
-            print(f"[Audio] Failed to start unified stream: {e}")
-            self._unified_stream = None
 
-    def start_monitor(self, device_index=None):
+        # Speichere Präferenz für späteren Fallback
+        if device_name:
+            self._last_device_name = device_name
+
+        # Liste der zu versuchenden Devices: [bevorzugtes, by-name, default]
+        devices_to_try = []
+
+        if device_index is not None:
+            devices_to_try.append(("preferred", device_index))
+
+        # By-name lookup als zweite Option
+        if self._last_device_name:
+            name_id = self.find_device_by_name(self._last_device_name)
+            if name_id is not None and name_id != device_index:
+                devices_to_try.append(("by-name", name_id))
+
+        # Default device als letzte Option
+        devices_to_try.append(("default", None))
+
+        for source, dev_id in devices_to_try:
+            try:
+                self._unified_stream = sd.InputStream(
+                    samplerate=self.sample_rate,
+                    device=dev_id,
+                    channels=1,
+                    callback=self._unified_callback
+                )
+                self._unified_stream.start()
+                self._current_device_index = dev_id
+
+                if source == "preferred":
+                    print(f"[Audio] Unified stream started on preferred device {dev_id}")
+                elif source == "by-name":
+                    print(f"[Audio] Unified stream started on device found by name: {dev_id}")
+                else:
+                    print(f"[Audio] Unified stream started on DEFAULT device (fallback)")
+
+                return dev_id  # Gib die tatsächlich verwendete Device-ID zurück
+
+            except Exception as e:
+                print(f"[Audio] Failed to start stream on {source} device {dev_id}: {e}")
+                continue
+
+        # Alle Versuche fehlgeschlagen
+        print("[Audio] CRITICAL: Could not start audio stream on any device!")
+        self._unified_stream = None
+        return None
+
+    def start_monitor(self, device_index=None, device_name=None):
         """Startet den unified stream für Monitoring (und bereitet Recording vor)"""
         if self._unified_stream:
-            return  # Bereits aktiv
-        
-        self._start_unified_stream(device_index)
+            return self._current_device_index  # Bereits aktiv
+
+        return self._start_unified_stream(device_index, device_name)
 
     def stop_monitor(self):
         """Stoppt den unified stream komplett (nur bei App-Schließung oder Device-Wechsel)"""

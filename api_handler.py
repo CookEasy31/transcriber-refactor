@@ -1,7 +1,29 @@
 import os
 import time
 import json
+import socket
+import getpass
+import requests
 from groq import Groq, RateLimitError, APIError, AuthenticationError, APITimeoutError
+
+
+# Proxy-Server für Usage-Tracking (optional)
+PROXY_BASE_URL = "https://actscriber-proxy.vercel.app"
+USE_PROXY = True  # Auf False setzen für direkten Groq-Zugriff
+
+
+def get_user_id():
+    """Generiert eine eindeutige User-ID für Groq Usage-Tracking.
+    
+    Format: username@hostname (z.B. "max.mustermann@LAPTOP-MAX")
+    Diese ID wird bei jedem API-Request mitgesendet und erscheint im Groq Dashboard.
+    """
+    try:
+        username = getpass.getuser()
+        hostname = socket.gethostname()
+        return f"{username}@{hostname}"
+    except Exception:
+        return "unknown@unknown"
 
 
 # JSON Schemas für Structured Outputs (erzwingt exaktes Format)
@@ -355,13 +377,54 @@ class APIHandler:
             self._client_api_key = api_key
         return self._client
 
+    def _transcribe_via_proxy(self, audio_filepath, lang_code, style_prompt):
+        """Transkribiert via Proxy-Server für Usage-Tracking"""
+        user_id = get_user_id()
+
+        for attempt in range(3):
+            try:
+                with open(audio_filepath, "rb") as file:
+                    files = {"file": (os.path.basename(audio_filepath), file, "audio/wav")}
+                    data = {"prompt": style_prompt}
+                    if lang_code is not None:
+                        data["language"] = lang_code
+
+                    response = requests.post(
+                        f"{PROXY_BASE_URL}/api/transcribe",
+                        files=files,
+                        data=data,
+                        headers={"X-User-ID": user_id},
+                        timeout=60.0
+                    )
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        return result.get("text")
+                    elif response.status_code == 429:
+                        # Rate limit
+                        if attempt < 2:
+                            time.sleep((attempt + 1) * 2)
+                            self.logger.log("[API] Rate Limit Proxy - Retry...", "warning")
+                            continue
+                        else:
+                            raise Exception("Rate limit exceeded")
+                    else:
+                        error_msg = response.json().get("error", response.text)
+                        raise Exception(f"Proxy error: {error_msg}")
+            except requests.exceptions.Timeout:
+                if attempt < 2:
+                    time.sleep((attempt + 1) * 2)
+                    self.logger.log("[API] Timeout Proxy - Retry...", "warning")
+                else:
+                    raise
+        return None
+
     def transcribe(self, audio_filepath):
         """Transkribiert eine Audiodatei mit Whisper API"""
         try:
-            client = self._get_client()
             lang_code = self.config.get_language_code()  # None für "Automatisch"
             lang_name = self.config.get("language")
-            
+
             # Prompt in der Sprache der Audiodatei (laut Doku empfohlen)
             # Bei "Automatisch" verwenden wir einen englischen Fallback
             style_prompts = {
@@ -377,14 +440,27 @@ class APIHandler:
                 "uk": "Юридична диктовка. Правильний правопис, великі літери та пунктуація.",
             }
             style_prompt = style_prompts.get(lang_code, "Legal dictation. Correct spelling and punctuation.")
-            
+
             self.logger.log(f"[API] Whisper Request - Language: {lang_name} ({lang_code or 'auto'}), File: {audio_filepath}")
-            
+
             # Check file size before sending
             file_size = os.path.getsize(audio_filepath)
             if file_size < 1000: # Less than 1KB
                  self.logger.log(f"[API] Audio file too small ({file_size} bytes). Potential recording issue.", "warning")
 
+            # Via Proxy für Usage-Tracking
+            if USE_PROXY:
+                self.logger.log("[API] Using Proxy for transcription")
+                result = self._transcribe_via_proxy(audio_filepath, lang_code, style_prompt)
+                if result:
+                    self.logger.log(f"[API] Whisper Response - Text length: {len(result)} chars")
+                    return result
+                else:
+                    self.logger.log("[API] Whisper returned empty text", "warning")
+                    return None
+
+            # Fallback: Direkter Groq-Zugriff
+            client = self._get_client()
             for attempt in range(3):
                 try:
                     with open(audio_filepath, "rb") as file:
@@ -406,7 +482,8 @@ class APIHandler:
                             **request_params,
                             timeout=30.0
                         )
-                        
+                        # Note: Whisper API doesn't support 'user' parameter directly
+
                         if not transcription or not transcription.text:
                             self.logger.log("[API] Whisper returned empty text", "warning")
                             return None
@@ -422,6 +499,35 @@ class APIHandler:
         except Exception as e:
             self.logger.log(f"[API] Transcribe Error: {e}", "error")
             return None
+
+    def _chat_via_proxy(self, messages, model, temperature, response_format=None):
+        """Chat-Completion via Proxy-Server für Usage-Tracking"""
+        user_id = get_user_id()
+
+        payload = {
+            "messages": messages,
+            "model": model,
+            "temperature": temperature,
+        }
+        if response_format:
+            payload["response_format"] = response_format
+
+        response = requests.post(
+            f"{PROXY_BASE_URL}/api/chat",
+            json=payload,
+            headers={
+                "X-User-ID": user_id,
+                "Content-Type": "application/json"
+            },
+            timeout=90.0
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+        else:
+            error_msg = response.json().get("error", response.text)
+            raise Exception(f"Proxy chat error: {error_msg}")
 
     def _clean_output(self, text):
         """Entfernt unerwünschte Präfixe und Marker aus dem LLM-Output"""
@@ -459,9 +565,8 @@ class APIHandler:
         if mode == "Diktat":
             return text
 
-        client = self._get_client()
         language_name = self.config.get("language")
-        
+
         # Wähle den richtigen System-Prompt und Schema basierend auf dem Modus
         if mode == "Übersetzer":
             source_lang = language_name
@@ -472,11 +577,11 @@ class APIHandler:
             # "Dynamisches Diktat"
             system_prompt = get_dynamic_system_prompt(language_name)
             json_schema = DYNAMIC_SCHEMA
-        
+
         # Custom Instructions anhängen (falls vorhanden)
         custom_instructions = self.config.get("custom_instructions")
         system_prompt = append_custom_instructions(system_prompt, custom_instructions)
-        
+
         # Kein Marker mehr im User-Content - der System-Prompt ist ausreichend klar
         # Marker wurden vom LLM manchmal in die Ausgabe kopiert
         user_content = text
@@ -484,34 +589,49 @@ class APIHandler:
         try:
             self.logger.log(f"[API] LLM Request - Mode: {mode}, Model: moonshotai/kimi-k2-instruct-0905")
             self.logger.log(f"[API] LLM Input (first 300 chars): {user_content[:300]}...")
-            
-            # Structured Outputs mit json_schema (erzwingt exaktes Format)
-            chat = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                model="moonshotai/kimi-k2-instruct-0905",
-                temperature=0.5,
-                timeout=60.0,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": json_schema
-                }
-            )
-            resp = chat.choices[0].message.content
-            
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+            response_format = {
+                "type": "json_schema",
+                "json_schema": json_schema
+            }
+
+            # Via Proxy für Usage-Tracking
+            if USE_PROXY:
+                self.logger.log("[API] Using Proxy for chat")
+                resp = self._chat_via_proxy(
+                    messages=messages,
+                    model="moonshotai/kimi-k2-instruct-0905",
+                    temperature=0.5,
+                    response_format=response_format
+                )
+            else:
+                # Fallback: Direkter Groq-Zugriff
+                client = self._get_client()
+                chat = client.chat.completions.create(
+                    messages=messages,
+                    model="moonshotai/kimi-k2-instruct-0905",
+                    temperature=0.5,
+                    timeout=60.0,
+                    response_format=response_format,
+                    user=get_user_id()  # Usage-Tracking pro User
+                )
+                resp = chat.choices[0].message.content
+
             self.logger.log(f"[API] LLM Raw Response: {resp[:500]}...")
-            
+
             data = json.loads(resp)
             # Hole "text" Feld (einheitlich für beide Modi)
             result = data.get("text", text)
-            
+
             # Fallback-Bereinigung falls trotzdem Präfixe vorhanden
             result = self._clean_output(result)
-            
+
             self.logger.log(f"[API] LLM Parsed Output (first 300 chars): {result[:300]}...")
-            
+
             return result
         except APITimeoutError:
             self.logger.log("[API] Timeout - Server antwortet nicht", "error")
@@ -530,58 +650,73 @@ class APIHandler:
     def refine_text(self, text, style, custom_instruction=None):
         """
         Überarbeitet einen Text nach verschiedenen Stilen.
-        
+
         Args:
             text: Der zu überarbeitende Text
             style: "email", "compact" oder "custom"
             custom_instruction: Bei style="custom" die Benutzeranweisung
-        
+
         Returns:
             Der überarbeitete Text
         """
         if not text or not text.strip():
             return text
-        
-        client = self._get_client()
+
         system_prompt = get_refinement_system_prompt(style)
-        
+
         # Custom Instructions anhängen (falls vorhanden)
         global_custom_instructions = self.config.get("custom_instructions")
         system_prompt = append_custom_instructions(system_prompt, global_custom_instructions)
-        
+
         # Bei custom: Anweisung + Text kombinieren
         if style == "custom" and custom_instruction:
             user_content = f"ANWEISUNG: {custom_instruction}\n\nTEXT ZUM ÜBERARBEITEN:\n{text}"
         else:
             user_content = text
-        
+
         try:
             self.logger.log(f"[API] Refine Request - Style: {style}")
             self.logger.log(f"[API] Refine Input (first 300 chars): {user_content[:300]}...")
-            
-            chat = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                model="moonshotai/kimi-k2-instruct-0905",
-                temperature=0.5,
-                timeout=60.0,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": REFINEMENT_SCHEMA
-                }
-            )
-            resp = chat.choices[0].message.content
-            
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+            response_format = {
+                "type": "json_schema",
+                "json_schema": REFINEMENT_SCHEMA
+            }
+
+            # Via Proxy für Usage-Tracking
+            if USE_PROXY:
+                self.logger.log("[API] Using Proxy for refine")
+                resp = self._chat_via_proxy(
+                    messages=messages,
+                    model="moonshotai/kimi-k2-instruct-0905",
+                    temperature=0.5,
+                    response_format=response_format
+                )
+            else:
+                # Fallback: Direkter Groq-Zugriff
+                client = self._get_client()
+                chat = client.chat.completions.create(
+                    messages=messages,
+                    model="moonshotai/kimi-k2-instruct-0905",
+                    temperature=0.5,
+                    timeout=60.0,
+                    response_format=response_format,
+                    user=get_user_id()  # Usage-Tracking pro User
+                )
+                resp = chat.choices[0].message.content
+
             self.logger.log(f"[API] Refine Raw Response: {resp[:500]}...")
-            
+
             data = json.loads(resp)
             result = data.get("text", text)
             result = self._clean_output(result)
-            
+
             self.logger.log(f"[API] Refine Output (first 300 chars): {result[:300]}...")
-            
+
             return result
         except APITimeoutError:
             self.logger.log("[API] Timeout - Server antwortet nicht", "error")
