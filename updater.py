@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import subprocess
+import tempfile
 import urllib.request
 import urllib.error
 from typing import Optional, Callable
@@ -178,6 +179,7 @@ def download_update(
 def install_update(msi_path: str) -> None:
     """
     Startet die Installation der MSI-Datei und beendet die aktuelle Anwendung.
+    Nach der Installation wird die App automatisch neu gestartet.
 
     Args:
         msi_path: Pfad zur MSI-Installationsdatei
@@ -192,14 +194,32 @@ def install_update(msi_path: str) -> None:
     # Absoluten Pfad sicherstellen
     msi_path = os.path.abspath(msi_path)
 
+    # Installationspfad der neuen Version (per-user installation)
+    install_dir = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'actScriber')
+    exe_path = os.path.join(install_dir, 'actScriber.exe')
+
     try:
-        # msiexec starten (im Hintergrund, damit App beendet werden kann)
-        # /i = Installation
-        # /passive = Minimale UI mit Fortschrittsbalken
+        # Batch-Script erstellen, das:
+        # 1. Auf MSI-Installation wartet
+        # 2. App neu startet
+        batch_content = f'''@echo off
+start /wait msiexec /i "{msi_path}" /passive
+if exist "{exe_path}" (
+    start "" "{exe_path}"
+)
+del "%~f0"
+'''
+
+        # Batch-Datei im Temp-Verzeichnis erstellen
+        batch_path = os.path.join(tempfile.gettempdir(), 'actscriber_update.bat')
+        with open(batch_path, 'w') as f:
+            f.write(batch_content)
+
+        # Batch-Script starten (im Hintergrund, versteckt)
         subprocess.Popen(
-            ['msiexec', '/i', msi_path, '/passive'],
+            ['cmd', '/c', batch_path],
             shell=False,
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         )
 
         # Anwendung beenden

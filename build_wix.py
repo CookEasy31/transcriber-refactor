@@ -38,7 +38,7 @@ import hashlib
 # KONFIGURATION - NUR HIER ÄNDERN FÜR UPDATES!
 # ==============================================================================
 
-VERSION = "1.3.7"                          # <- Für Updates: Nur diese Zeile ändern!
+VERSION = "1.3.9"                          # <- Für Updates: Nur diese Zeile ändern!
 APP_NAME = "actScriber"                    # Interner Name (keine Leerzeichen)
 APP_DISPLAY_NAME = "act Scriber"           # Anzeigename
 MANUFACTURER = "act legal IT"
@@ -304,7 +304,7 @@ def generate_wxs(build_folder: Path) -> str:
     Version="{VERSION}"
     UpgradeCode="{UPGRADE_CODE}"
     ProductCode="{PRODUCT_CODE}"
-    Scope="perMachine"
+    Scope="perUser"
     Compressed="yes"
     Language="1031">
     
@@ -366,7 +366,7 @@ def generate_wxs(build_folder: Path) -> str:
   <!-- VERZEICHNISSTRUKTUR                                                   -->
   <!-- ====================================================================== -->
   <Fragment>
-    <StandardDirectory Id="ProgramFilesFolder">
+    <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="INSTALLFOLDER" Name="{APP_NAME}">
 {dir_elements}
       </Directory>
@@ -483,6 +483,8 @@ def print_summary():
      {msi_path}
 
   Features dieser MSI:
+     - Per-User Installation (KEINE Admin-Rechte noetig!)
+     - Installiert nach: %LOCALAPPDATA%\\actScriber\\
      - GUI-Installer mit Willkommens-Dialog
      - Lizenzvereinbarung
      - Installationspfad-Auswahl
@@ -490,10 +492,11 @@ def print_summary():
      - Automatisches Schliessen der App bei Updates
      - Startmenue + Desktop Verknuepfung
      - Systemsteuerungs-Eintrag mit Icon
+     - Auto-Updates ohne IT-Support moeglich!
 
   Installation:
      Doppelklick auf {OUTPUT_MSI}
-     
+
   Silent Install (fuer IT):
      msiexec /i "{OUTPUT_MSI}" /qn
 """)
@@ -604,7 +607,7 @@ def main():
     build_folder = find_build_folder()
 
     # 2b. Cleanup - entferne unnötige Dateien
-    cleanup_build(build_folder)
+    #cleanup_build(build_folder)  # DISABLED for UI test
 
     # 3. Erstelle .env Datei
     create_env_file(build_folder)

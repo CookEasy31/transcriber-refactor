@@ -9,6 +9,8 @@ Desktop-Anwendung für Echtzeit-Transkription und intelligente Textverarbeitung 
 - **Übersetzungsmodus**: Echtzeit-Übersetzung in verschiedene Sprachen
 - **Dark/Light Mode**: Automatische Erkennung des Windows-Themes
 - **Auto-Updates**: Automatische Prüfung auf neue Versionen via GitHub Releases
+- **Per-User Installation**: Keine Admin-Rechte erforderlich
+- **Sleep-Mode Recovery**: Automatische Mikrofon-Wiederherstellung nach Energiesparmodus
 
 ## Architektur
 
@@ -32,9 +34,11 @@ Desktop-Anwendung für Echtzeit-Transkription und intelligente Textverarbeitung 
 | `main.py` | Haupt-UI (PySide6), ~2500 Zeilen |
 | `config.py` | Konfiguration, APP_VERSION, Pfade |
 | `api_handler.py` | API-Kommunikation (Proxy oder direkt) |
-| `audio_handler.py` | Audio-Aufnahme mit Fallback-Logik |
+| `audio_handler.py` | Audio-Aufnahme mit Fallback-Logik + Health-Check |
 | `data_handler.py` | SQLite-Logging, History |
-| `updater.py` | GitHub Release Update-Checker |
+| `updater.py` | GitHub Release Update-Checker + Auto-Restart |
+| `build_nuitka.py` | Nuitka Build-System (empfohlen) |
+| `build_wix.py` | cx_Freeze + WiX Build-System |
 | `requirements.txt` | Python-Dependencies |
 
 ## API Handler Konfiguration
@@ -84,6 +88,13 @@ Der `audio_handler.py` implementiert automatisches Fallback:
 
 Nützlich für Docking-Station-Szenarien wo sich Device-IDs ändern.
 
+### Sleep-Mode Recovery
+
+Die App prüft alle 10 Sekunden die Audio-Device-Gesundheit:
+- Erkennt wenn Mikrofon nach Energiesparmodus nicht mehr verfügbar ist
+- Versucht automatisch das Gerät neu zu initialisieren
+- Wechselt automatisch auf verfügbare Fallback-Geräte
+
 ## Dark Mode
 
 Die App erkennt automatisch das Windows-Theme via Registry:
@@ -98,15 +109,22 @@ HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTh
 - **Erster Check**: 3 Sekunden nach App-Start
 - **Force Updates**: Release-Titel mit `[FORCE]` oder `[REQUIRED]`
 - **Download**: MSI-Installer aus GitHub Release Assets
+- **Auto-Restart**: App startet automatisch nach Update neu
+- **Keine Admin-Rechte**: User können selbst Updates durchführen
 
 ### Version erhöhen
 
-In `config.py`:
+1. Version in allen Dateien aktualisieren:
 ```python
-APP_VERSION = "1.3.7"  # Semantic Versioning
+# config.py
+APP_VERSION = "1.3.9"
+
+# build_nuitka.py / build_wix.py / build_msi.py
+VERSION = "1.3.9"
 ```
 
-GitHub Release Tag muss `v1.3.7` Format haben.
+2. Build erstellen: `python build_nuitka.py`
+3. GitHub Release erstellen mit Tag `v1.3.9`
 
 ## Installation (Entwicklung)
 
@@ -121,11 +139,23 @@ python main.py
 ## Build (MSI Installer)
 
 ```bash
-# Voraussetzung: WiX Toolset v3 installiert
+# Voraussetzungen:
+# - WiX Toolset v6: dotnet tool install --global wix
+# - Nuitka: uv pip install nuitka ordered-set zstandard
+
+# Build mit Nuitka (empfohlen - schneller, kleiner)
+python build_nuitka.py
+
+# Alternativ: Build mit cx_Freeze
 python build_wix.py
 ```
 
-Output: `dist/actScriber-X.X.X-win64.msi`
+Output: `actScriber-X.X.X-win64.msi` (~50 MB mit Nuitka, ~200 MB mit cx_Freeze)
+
+### Installation
+- **Per-User Installation**: Installiert nach `%LOCALAPPDATA%\actScriber\`
+- **Keine Admin-Rechte** erforderlich
+- User können selbstständig Updates durchführen
 
 ## Environment Variables
 

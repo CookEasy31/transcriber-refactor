@@ -291,7 +291,7 @@ class ForceUpdateDialog(QDialog):
             notes_preview = release_notes[:200] + "..." if len(release_notes) > 200 else release_notes
             notes_label = QLabel(notes_preview)
             notes_label.setFont(QFont("Segoe UI", 10))
-            notes_label.setStyleSheet(f"color: {self.colors['text_light']}; background: {self.colors['active_bg']}; padding: 10px; border-radius: 6px;")
+            notes_label.setStyleSheet(f"color: {COLORS['text_light']}; background: {COLORS['active_bg']}; padding: 10px; border-radius: 6px;")
             notes_label.setWordWrap(True)
             layout.addWidget(notes_label)
 
@@ -307,7 +307,7 @@ class ForceUpdateDialog(QDialog):
         # Status Label
         self.status_label = QLabel("Verbinde mit Server...")
         self.status_label.setFont(QFont("Segoe UI", 10))
-        self.status_label.setStyleSheet(f"color: {self.colors['text_light']};")
+        self.status_label.setStyleSheet(f"color: {COLORS['text_light']};")
         layout.addWidget(self.status_label)
 
     def set_progress(self, percent):
@@ -856,7 +856,8 @@ class ACTScriber(QMainWindow):
             # Force Update - sofort starten
             self.force_update_signal.emit(result)
         else:
-            # Optionales Update - nur UI aktualisieren
+            # Optionales Update - speichern und UI aktualisieren
+            self.pending_update = result
             self.update_available_signal.emit(result)
 
     def _on_update_available(self, update_info):
