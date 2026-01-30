@@ -230,3 +230,65 @@ echo -n "VALUE" | vercel env add VAR_NAME production
 ## Lizenz
 
 Privates Repository - Interne Nutzung
+
+---
+
+## SESSION-BERICHT 30.01.2026 (WICHTIG - BITTE LESEN!)
+
+### Was ist passiert
+
+1. **Update-Loop bei Clients** - Durch Wechsel des Installationspfades (LocalAppData → Program Files) entstand ein Loop:
+   - Alte Clients hatten App in `%LOCALAPPDATA%\actScriber\`
+   - Neue MSI (v2.0.3) installierte nach `C:\Program Files\actScriber\`
+   - Nach Update startete die ALTE App aus LocalAppData (Shortcut zeigte dorthin)
+   - Alte App sah wieder Update → Loop!
+
+2. **Notfall-Stopp** - Alle Releases v2.0.x wurden gelöscht. Aktuell ist **v1.4.0** das neueste Release.
+
+### Aktueller Stand
+
+| Datei | Version | Installationspfad |
+|-------|---------|-------------------|
+| `config.py` | 2.0.4 | - |
+| `build_wix.py` | 2.0.4 | `ProgramFiles64Folder` + `perMachine` |
+| `build_nuitka.py` | 2.0.4 | `ProgramFiles64Folder` + `perMachine` |
+| `updater.py` | - | Zeigt auf `PROGRAMFILES` |
+| GitHub Latest | **v1.4.0** | War `LocalAppDataFolder` |
+
+### PROBLEM: Inkonsistenz!
+
+- **Alte Clients**: App in `%LOCALAPPDATA%\actScriber\`
+- **Neue Build-Skripte**: Installieren nach `C:\Program Files\actScriber\`
+- **Das verursacht Chaos bei Updates!**
+
+### Was noch zu tun ist
+
+1. **Entscheidung treffen**: EIN Installationspfad für alle - entweder:
+   - `LocalAppData` (perUser, keine Admin-Rechte) - **funktionierte früher**
+   - `Program Files` (perMachine, Admin bei Install) - **aktuell in Build-Skripten**
+
+2. **Killswitch implementieren**: JSON-Datei auf GitHub die Updates global stoppen kann
+
+3. **Clients aufräumen**: Alte Installationen in LocalAppData UND Program Files entfernen
+
+4. **Sauberes Release**: Erst wenn alles konsistent ist!
+
+### WICHTIGE REGELN
+
+- **NIEMALS** `git push` oder `gh release create` ohne explizite User-Bestätigung!
+- **NIEMALS** Installationspfad ändern ohne Migration-Plan für bestehende Clients
+- Releases triggern sofort Updates bei ALLEN Clients!
+
+### Dateien die geändert wurden (nicht gepusht!)
+
+- `updater.py` - Auf ZIP-basierte Updates umgestellt (experimentell, nicht getestet)
+- Lokale MSI: `actScriber-2.0.4-win64.msi` (nicht releasen!)
+- Lokale ZIP: `actScriber-2.0.4-win64.zip` (nicht releasen!)
+
+### Nächste Session
+
+1. Überblick verschaffen über Client-Installationen
+2. Entscheidung: LocalAppData oder Program Files?
+3. Build-Skripte + updater.py konsistent machen
+4. Killswitch implementieren
+5. Sauber testen BEVOR Release
