@@ -7,7 +7,7 @@ import sys
 import os
 import time
 import threading
-import numpy as np
+# numpy is lazy-loaded where needed for faster startup
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QComboBox, QLineEdit,
@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont, QColor, QIcon, QAction, QPixmap
 import qtawesome as qta
 
 # Import existing modules
-from config import ConfigManager, LANGUAGES, TARGET_LANGUAGES, APP_NAME, APP_VERSION, APP_DATA_DIR
+from config import ConfigManager, LANGUAGES, TARGET_LANGUAGES, APP_NAME, APP_VERSION, APP_DATA_DIR, format_hotkey_name
 from audio_handler import AudioRecorder, NO_AUDIO_DETECTED
 from api_handler import APIHandler
 from data_handler import DataHandler
@@ -134,7 +134,7 @@ COLORS = get_colors()
 
 class TranscriptionWorker(QThread):
     """Worker Thread für Transkription im Hintergrund"""
-    finished = Signal(str)
+    finished = Signal(str, str)  # (final_text, raw_transcript)
     error = Signal(str)
     status = Signal(str)
 
@@ -170,7 +170,7 @@ class TranscriptionWorker(QThread):
             print("[Worker] Text copied to clipboard")
 
             # WICHTIG: Signal ZUERST emittieren für UI-Update
-            self.finished.emit(final)
+            self.finished.emit(final, raw)
             print("[Worker] Finished signal emitted")
 
             # Dann kurz warten und einfügen (im Worker-Thread)
@@ -191,6 +191,29 @@ class TranscriptionWorker(QThread):
                     os.remove(self.audio_file)
             except:
                 pass
+
+
+# ═══════════════════════════════════════════════════════════════
+# DEVICE LOADING WORKER
+# ═══════════════════════════════════════════════════════════════
+
+class DeviceLoadWorker(QThread):
+    """Worker Thread für Geräte-Enumeration (blockiert sonst UI)"""
+    finished = Signal(list)  # List of devices
+
+    def __init__(self, recorder):
+        super().__init__()
+        self.recorder = recorder
+
+    def run(self):
+        try:
+            # test_functionality=False for fast dropdown population
+            # Devices are tested when actually used, not during enumeration
+            devices = self.recorder.reload_devices(test_functionality=False)
+            self.finished.emit(devices)
+        except Exception as e:
+            print(f"[DeviceLoad] Error: {e}")
+            self.finished.emit([])
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -390,6 +413,7 @@ class CustomButtonManagerDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
+        self.colors = COLORS  # Global colors reference
         self.setWindowTitle("Buttons verwalten")
         self.setMinimumWidth(500)
         self.setMinimumHeight(400)
@@ -600,41 +624,62 @@ class MaterialCard(QFrame):
 # ═══════════════════════════════════════════════════════════════
 
 class MicrophoneTestDialog(QDialog):
-    """Dialog zum Testen aller Mikrofone mit Live-Level-Anzeige"""
-    def __init__(self, parent=None):
+    """Dialog zum Testen aller Mikrofone mit Live-Level-Anzeige.
+
+    - Pausiert Haupt-Stream um Konflikte zu vermeiden
+    - Testet alle Geräte PARALLEL
+    - Sortiert nach 3 Sekunden: Geräte mit Pegel oben
+    """
+    def __init__(self, parent=None, main_recorder=None):
         super().__init__(parent)
         self.setWindowTitle("Mikrofone testen")
         self.setMinimumSize(500, 400)
         self.setModal(True)
-        
+
         self.colors = get_colors()
+        self.main_recorder = main_recorder
         self.streams = []
-        self.level_bars = {}
+        self.device_data = {}  # {device_id: {'bar': QProgressBar, 'row': QWidget, 'rms': float, 'max_rms': float}}
         self.running = True
-        
+        self.sorted = False
+
+        # Pausiere Haupt-Stream SOFORT
+        if self.main_recorder and self.main_recorder._unified_stream:
+            print("[MicTest] Pausiere Haupt-Audio-Stream...")
+            self.main_recorder.stop_monitor()
+
         self.setup_ui()
-        self.start_monitoring()
-        
+        self.load_devices()
+        self.start_all_streams()
+
+        # Timer für UI-Updates
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self._update_all_levels)
+        self.update_timer.start(50)  # 20 FPS
+
+        # Nach 3 Sekunden sortieren
+        QTimer.singleShot(3000, self._sort_by_level)
+
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
-        
+
         # Header
         header = QLabel("Sprechen Sie in Ihr Mikrofon um es zu testen")
         header.setFont(QFont("Segoe UI", 12))
         header.setStyleSheet(f"color: {self.colors['text_light']};")
         layout.addWidget(header)
-        
+
         # Scroll area for devices
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_content = QWidget()
-        self.devices_layout = QVBoxLayout(scroll_content)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_content = QWidget()
+        self.devices_layout = QVBoxLayout(self.scroll_content)
         self.devices_layout.setSpacing(8)
-        scroll.setWidget(scroll_content)
-        layout.addWidget(scroll)
-        
+        self.scroll.setWidget(self.scroll_content)
+        layout.addWidget(self.scroll)
+
         # Close button
         close_btn = QPushButton("Schließen")
         close_btn.setObjectName("ActionButton")
@@ -642,33 +687,38 @@ class MicrophoneTestDialog(QDialog):
         close_btn.clicked.connect(self.close)
         close_btn.setMinimumHeight(40)
         layout.addWidget(close_btn)
-        
-        # Load devices
-        self.load_devices()
-        
+
     def load_devices(self):
         import sounddevice as sd
         devices = sd.query_devices()
-        
+
+        seen_names = set()  # Duplikat-Filter
         for i, dev in enumerate(devices):
             if dev["max_input_channels"] > 0:
-                # Skip irrelevant devices
-                name_lower = dev["name"].lower()
+                name = dev["name"]
+                name_lower = name.lower()
+
+                # Skip irrelevante Geräte
                 if any(kw in name_lower for kw in ["stereo mix", "output", "loopback", "virtual"]):
                     continue
-                    
+
+                # Skip Duplikate (gleiches Gerät für verschiedene Audio-APIs)
+                # Vergleiche nur die ersten 25 Zeichen (Namen werden manchmal abgeschnitten)
+                name_key = name[:25]
+                if name_key in seen_names:
+                    continue
+                seen_names.add(name_key)
+
                 row = QWidget()
                 row_layout = QHBoxLayout(row)
                 row_layout.setContentsMargins(8, 4, 8, 4)
-                
-                # Device name
+
                 name_label = QLabel(dev["name"][:40] + ("..." if len(dev["name"]) > 40 else ""))
                 name_label.setFont(QFont("Segoe UI", 10))
                 name_label.setFixedWidth(250)
                 name_label.setToolTip(dev["name"])
                 row_layout.addWidget(name_label)
-                
-                # Level bar
+
                 level_bar = QProgressBar()
                 level_bar.setMinimum(0)
                 level_bar.setMaximum(100)
@@ -687,49 +737,105 @@ class MicrophoneTestDialog(QDialog):
                     }}
                 """)
                 row_layout.addWidget(level_bar)
-                
-                self.level_bars[i] = level_bar
+
+                self.device_data[i] = {
+                    'bar': level_bar,
+                    'row': row,
+                    'name': dev["name"],
+                    'rms': 0.0,
+                    'max_rms': 0.0
+                }
                 self.devices_layout.addWidget(row)
-        
+
         self.devices_layout.addStretch()
-        
-    def start_monitoring(self):
+
+    def start_all_streams(self):
+        """Startet Streams für alle Geräte parallel"""
         import sounddevice as sd
         import numpy as np
-        
-        def make_callback(device_id, level_bar):
+
+        def make_callback(device_id):
             def callback(indata, frames, time_info, status):
                 if self.running and indata.size > 0:
                     rms = float(np.sqrt(np.mean(indata**2)))
-                    level = min(int(rms * 1000), 100)  # Scale to 0-100
-                    # Use QTimer to update UI from main thread
-                    QTimer.singleShot(0, lambda: level_bar.setValue(level) if self.running else None)
+                    if device_id in self.device_data:
+                        self.device_data[device_id]['rms'] = rms
+                        # Track maximum für Sortierung
+                        if rms > self.device_data[device_id]['max_rms']:
+                            self.device_data[device_id]['max_rms'] = rms
             return callback
-        
-        for device_id, level_bar in self.level_bars.items():
+
+        for device_id in self.device_data.keys():
             try:
                 stream = sd.InputStream(
                     samplerate=16000,
                     device=device_id,
                     channels=1,
-                    callback=make_callback(device_id, level_bar)
+                    blocksize=1024,
+                    callback=make_callback(device_id)
                 )
                 stream.start()
                 self.streams.append(stream)
+                print(f"[MicTest] Stream gestartet für Device {device_id}")
             except Exception as e:
-                # Mark device as unavailable
-                level_bar.setStyleSheet(f"""
+                print(f"[MicTest] Fehler bei Device {device_id}: {e}")
+                bar = self.device_data[device_id]['bar']
+                bar.setStyleSheet(f"""
                     QProgressBar {{
                         border: 1px solid {self.colors['accent']};
                         border-radius: 4px;
                         background-color: {self.colors['bg_elevated']};
                     }}
                 """)
-                level_bar.setFormat("Nicht verfügbar")
-                level_bar.setTextVisible(True)
-                
+                bar.setFormat("Nicht verfügbar")
+                bar.setTextVisible(True)
+
+    def _update_all_levels(self):
+        """Aktualisiert alle Level-Anzeigen"""
+        if not self.running:
+            return
+
+        for device_id, data in self.device_data.items():
+            level = min(int(data['rms'] * 500), 100)
+            data['bar'].setValue(level)
+
+    def _sort_by_level(self):
+        """Sortiert die Liste nach erkanntem Pegel (höchster oben)"""
+        if self.sorted or not self.running:
+            return
+
+        self.sorted = True
+        print("[MicTest] Sortiere nach Pegel...")
+
+        # Sortiere nach max_rms (absteigend)
+        sorted_devices = sorted(
+            self.device_data.items(),
+            key=lambda x: x[1]['max_rms'],
+            reverse=True
+        )
+
+        # Entferne alle Widgets aus dem Layout (rückwärts um Index-Probleme zu vermeiden)
+        for i in reversed(range(self.devices_layout.count())):
+            item = self.devices_layout.itemAt(i)
+            if item.widget():
+                # Widget vom Layout entfernen ohne zu löschen
+                self.devices_layout.removeWidget(item.widget())
+            else:
+                # Spacer/Stretch entfernen
+                self.devices_layout.removeItem(item)
+
+        # Füge in neuer Reihenfolge hinzu
+        for device_id, data in sorted_devices:
+            self.devices_layout.addWidget(data['row'])
+            print(f"[MicTest] Device {device_id} ({data['name'][:20]}): max_rms={data['max_rms']:.4f}")
+
+        self.devices_layout.addStretch()
+
     def closeEvent(self, event):
         self.running = False
+        self.update_timer.stop()
+
+        # Alle Streams schließen
         for stream in self.streams:
             try:
                 stream.stop()
@@ -737,6 +843,16 @@ class MicrophoneTestDialog(QDialog):
             except:
                 pass
         self.streams.clear()
+
+        # Haupt-Recorder Stream wieder starten
+        if self.main_recorder:
+            print("[MicTest] Starte Haupt-Audio-Stream wieder...")
+            parent = self.parent()
+            if parent and hasattr(parent, 'config'):
+                device_index = parent.config.get("device_index")
+                device_name = parent.config.get("device_name")
+                self.main_recorder.start_monitor(device_index, device_name)
+
         super().closeEvent(event)
 
 
@@ -783,6 +899,7 @@ class ACTScriber(QMainWindow):
         self.current_worker = None
         self.colors = COLORS
         self.custom_buttons = []  # UI Buttons für Custom Instructions
+        self._last_raw_transcript = None  # For repeat functionality
 
         # Setup UI
         self.setup_ui()
@@ -808,6 +925,25 @@ class ACTScriber(QMainWindow):
 
         # Setup Auto-Updater
         self.setup_auto_updater()
+
+        # Start audio stream immediately for instant recording (fills pre-buffer)
+        QTimer.singleShot(500, self._start_audio_monitor_delayed)
+
+        # Show support page after update (What's New)
+        QTimer.singleShot(100, self._check_show_whats_new)
+
+    def _check_show_whats_new(self):
+        """Shows support page if app was updated"""
+        last_seen = self.config.get("last_seen_version")
+        if last_seen != APP_VERSION:
+            self.switch_view("help")
+            self.config.set("last_seen_version", APP_VERSION)
+
+    def _start_audio_monitor_delayed(self):
+        """Starts audio monitoring after app is fully loaded"""
+        device_index = self.config.get("device_index")
+        device_name = self.config.get("device_name")
+        self.recorder.start_monitor(device_index, device_name)
 
     def setup_auto_updater(self):
         """Initialisiert das Auto-Update-System"""
@@ -1096,12 +1232,21 @@ class ACTScriber(QMainWindow):
 
         self.update_nav_icons()
 
-        # Monitor in Settings starten/stoppen + Geräteliste aktualisieren
+        # In Settings: Geräteliste aktualisieren (Stream läuft bereits im Hintergrund)
         if view_id == "settings":
-            self.refresh_devices()  # Geräteliste bei jedem Öffnen aktualisieren
-            self.recorder.start_monitor(device_index=self.config.get("device_index"), device_name=self.config.get("device_name"))
-        else:
-            self.recorder.stop_monitor()
+            self.refresh_devices()
+            # Stream läuft bereits seit App-Start, nur sicherstellen dass er aktiv ist
+            if not self.recorder._unified_stream:
+                self.recorder.start_monitor(
+                    device_index=self.config.get("device_index"),
+                    device_name=self.config.get("device_name")
+                )
+        # WICHTIG: Stream NICHT stoppen - wird für Pre-Buffer benötigt!
+
+    def _select_mode_and_go_home(self, mode_value):
+        """Wählt einen Modus und wechselt zur Hauptseite"""
+        self.mode_combo.setCurrentText(mode_value)
+        self.switch_view("home")
 
     # ═══════════════════════════════════════════════════════════════
     # HOME VIEW
@@ -1131,7 +1276,7 @@ class ACTScriber(QMainWindow):
         subtitle.setObjectName("SubtitleText")
         hotkey_layout.addWidget(subtitle)
 
-        current_hotkey = self.config.get("hotkey").upper().replace("_", " + ")
+        current_hotkey = format_hotkey_name(self.config.get("hotkey"))
         self.hotkey_badge = QLabel(current_hotkey)
         self.hotkey_badge.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self.hotkey_badge.setObjectName("HotkeyBadge")
@@ -1336,6 +1481,11 @@ class ACTScriber(QMainWindow):
         transcript_header.addWidget(transcript_title)
 
         transcript_header.addStretch()
+
+        self.repeat_btn = self.create_action_button("Wiederholen", "fa5s.redo", "ghost")
+        self.repeat_btn.clicked.connect(self.repeat_last_transcription)
+        self.repeat_btn.setEnabled(False)  # Initially disabled until first transcription
+        transcript_header.addWidget(self.repeat_btn)
 
         copy_btn = self.create_action_button("Kopieren", "fa5s.copy", "ghost")
         copy_btn.clicked.connect(self.copy_transcript)
@@ -1719,7 +1869,7 @@ class ACTScriber(QMainWindow):
         hotkey_label.setFixedWidth(140)
         hotkey_row.addWidget(hotkey_label)
 
-        current_hk = self.config.get("hotkey").upper().replace("_", " + ")
+        current_hk = format_hotkey_name(self.config.get("hotkey"))
         self.hotkey_btn = QPushButton(f"Aktuell: {current_hk}")
         self.hotkey_btn.setMinimumHeight(36)
         self.hotkey_btn.setMinimumWidth(150)
@@ -1762,8 +1912,6 @@ class ACTScriber(QMainWindow):
 
         save_custom_btn = self.create_action_button("Speichern", "fa5s.save", "primary")
         save_custom_btn.clicked.connect(self.save_custom_instructions)
-        custom_layout.addWidget(save_custom_btn, alignment=Qt.AlignmentFlag.AlignRight)
-
         custom_layout.addWidget(save_custom_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
         content_layout.addWidget(custom_card)
@@ -1871,93 +2019,295 @@ class ACTScriber(QMainWindow):
     # ═══════════════════════════════════════════════════════════════
 
     def create_help_view(self):
-        """Erstellt die Help View"""
+        """Erstellt die Help View - einfach und visuell für Anwälte"""
         view = QWidget()
         layout = QVBoxLayout(view)
         layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(20)
+        layout.setSpacing(24)
 
-        label = QLabel("Support & Hilfe")
+        label = QLabel("So funktioniert's")
         label.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
         label.setObjectName("HeaderLabel")
         layout.addWidget(label)
 
-        # Quick Start Card
-        start_card = MaterialCard(elevation=2)
-        start_layout = QVBoxLayout(start_card)
-        start_layout.setSpacing(12)
+        # ══════════════════════════════════════════════════════════
+        # HAUPTANLEITUNG - Clean wie Modi-Karten
+        # ══════════════════════════════════════════════════════════
+        hotkey_name = format_hotkey_name(self.config.get("hotkey"))
 
-        start_title = QLabel("Schnellstart")
-        start_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        start_layout.addWidget(start_title)
+        main_card = QFrame()
+        main_card.setStyleSheet(f"""
+            QFrame#mainCard {{
+                background: {self.colors['bg_card']};
+                border-radius: 12px;
+            }}
+        """)
+        main_card.setObjectName("mainCard")
+        main_layout = QVBoxLayout(main_card)
+        main_layout.setContentsMargins(24, 20, 24, 16)
+        main_layout.setSpacing(12)
 
-        steps = [
-            "1. Groq API Key in den Einstellungen eingeben",
-            "2. Mikrofon auswählen (falls nicht Standard)",
-            "3. Hotkey drücken und halten zum Aufnehmen",
-            "4. Hotkey loslassen - Text wird transkribiert und eingefügt"
-        ]
+        # Step 1
+        step1_container = QFrame()
+        step1_container.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #f0f2f5, stop:1 #e8eaed);
+                border-radius: 8px;
+            }
+        """)
+        step1 = QHBoxLayout(step1_container)
+        step1.setContentsMargins(14, 10, 14, 10)
+        step1_num = QLabel("1.")
+        step1_num.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        step1_num.setStyleSheet(f"color: {self.colors['primary']};")
+        step1_num.setFixedWidth(24)
+        step1.addWidget(step1_num)
+        step1_text = QLabel("Ins Textfeld klicken")
+        step1_text.setFont(QFont("Segoe UI", 13))
+        step1.addWidget(step1_text)
+        step1_hint = QLabel("Cursor muss blinken")
+        step1_hint.setFont(QFont("Segoe UI", 11))
+        step1_hint.setStyleSheet(f"color: {self.colors['text_light']};")
+        step1.addWidget(step1_hint)
+        step1.addStretch()
+        main_layout.addWidget(step1_container)
 
-        for step in steps:
-            step_label = QLabel(step)
-            step_label.setFont(QFont("Segoe UI", 11))
-            start_layout.addWidget(step_label)
+        # Step 2
+        step2_container = QFrame()
+        step2_container.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #f0f2f5, stop:1 #e8eaed);
+                border-radius: 8px;
+            }
+        """)
+        step2 = QHBoxLayout(step2_container)
+        step2.setContentsMargins(14, 10, 14, 10)
+        step2_num = QLabel("2.")
+        step2_num.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        step2_num.setStyleSheet(f"color: {self.colors['primary']};")
+        step2_num.setFixedWidth(24)
+        step2.addWidget(step2_num)
 
-        layout.addWidget(start_card)
+        self._hotkey_badge_large = QLabel(hotkey_name)
+        self._hotkey_badge_large.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
+        self._hotkey_badge_large.setStyleSheet("""
+            background: #ffffff;
+            color: #1a1a1a;
+            padding: 5px 12px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            border-bottom: 2px solid #aaa;
+        """)
+        step2.addWidget(self._hotkey_badge_large)
 
-        # Modi Card
-        modi_card = MaterialCard(elevation=2)
-        modi_layout = QVBoxLayout(modi_card)
-        modi_layout.setSpacing(12)
+        step2_text = QLabel("halten + sprechen")
+        step2_text.setFont(QFont("Segoe UI", 13))
+        step2.addWidget(step2_text)
+        step2.addStretch()
+        main_layout.addWidget(step2_container)
 
-        modi_title = QLabel("Verfügbare Modi")
-        modi_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        modi_layout.addWidget(modi_title)
+        # Step 3
+        step3_container = QFrame()
+        step3_container.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #f0f2f5, stop:1 #e8eaed);
+                border-radius: 8px;
+            }
+        """)
+        step3 = QHBoxLayout(step3_container)
+        step3.setContentsMargins(14, 10, 14, 10)
+        step3_num = QLabel("3.")
+        step3_num.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        step3_num.setStyleSheet(f"color: {self.colors['primary']};")
+        step3_num.setFixedWidth(24)
+        step3.addWidget(step3_num)
+        step3_text = QLabel("Loslassen")
+        step3_text.setFont(QFont("Segoe UI", 13))
+        step3.addWidget(step3_text)
+        step3_result = QLabel("→ Text erscheint (2-3 Sek.)")
+        step3_result.setFont(QFont("Segoe UI", 11))
+        step3_result.setStyleSheet(f"color: {self.colors['text_light']};")
+        step3.addWidget(step3_result)
+        step3.addStretch()
+        main_layout.addWidget(step3_container)
+
+        # Hint
+        hint = QHBoxLayout()
+        hint_icon = QLabel()
+        hint_icon.setPixmap(qta.icon('fa5s.info-circle', color=self.colors['text_light']).pixmap(14, 14))
+        hint.addWidget(hint_icon)
+        hint_text = QLabel("Falls Text nicht erscheint: Strg+V (Zwischenablage)")
+        hint_text.setFont(QFont("Segoe UI", 10))
+        hint_text.setStyleSheet(f"color: {self.colors['text_light']};")
+        hint.addWidget(hint_text)
+        hint.addStretch()
+        main_layout.addLayout(hint)
+
+        layout.addWidget(main_card)
+
+        # ══════════════════════════════════════════════════════════
+        # DIE DREI MODI - Bunte Karten nebeneinander
+        # ══════════════════════════════════════════════════════════
+        modi_title = QLabel("Wählen Sie Ihren Modus")
+        modi_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        layout.addWidget(modi_title)
+
+        modi_row = QHBoxLayout()
+        modi_row.setSpacing(16)
 
         modes = [
-            ("Diktat", "Basis-Transkription ohne LLM-Verarbeitung"),
-            ("Dynamisches Diktat", "Intelligente Formatierung mit KI"),
-            ("Übersetzer", "Transkription + Übersetzung in Zielsprache")
+            {
+                "name": "Diktat",
+                "mode_value": "Diktat",
+                "color": "#F59E0B",  # Amber/Orange
+                "icon": "fa5s.bolt",
+                "speed": "Am schnellsten",
+                "desc": "Sprache zu Text.\nKeine Nachbearbeitung.",
+                "best_for": "Schnelle Notizen",
+            },
+            {
+                "name": "Dynamisch",
+                "mode_value": "Dynamisches Diktat",
+                "color": self.colors['primary'],
+                "icon": "fa5s.magic",
+                "speed": "Normal",
+                "desc": "KI formatiert den Text.\nSatzbau, Grammatik, Struktur.",
+                "best_for": "Professionelle Texte",
+            },
+            {
+                "name": "Übersetzer",
+                "mode_value": "Übersetzer",
+                "color": "#10B981",  # Green
+                "icon": "fa5s.language",
+                "speed": "Normal",
+                "desc": "Deutsch sprechen,\nEnglisch schreiben.",
+                "best_for": "International",
+            },
         ]
 
-        for mode_name, mode_desc in modes:
-            mode_row = QHBoxLayout()
-            name_label = QLabel(f"{mode_name}:")
-            name_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-            name_label.setFixedWidth(180)
-            mode_row.addWidget(name_label)
+        for mode in modes:
+            card = QFrame()
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: {self.colors['bg_card']};
+                    border: 2px solid {mode['color']};
+                    border-radius: 12px;
+                    padding: 16px;
+                }}
+                QFrame:hover {{
+                    background: {self.colors['bg_sidebar']};
+                }}
+            """)
+            # Make clickable
+            card.mousePressEvent = lambda event, m=mode['mode_value']: self._select_mode_and_go_home(m)
+            card.setMinimumWidth(200)
+            card_layout = QVBoxLayout(card)
+            card_layout.setSpacing(10)
 
-            desc_label = QLabel(mode_desc)
-            desc_label.setFont(QFont("Segoe UI", 11))
-            mode_row.addWidget(desc_label)
+            # Icon + Name
+            header = QHBoxLayout()
+            icon = QLabel()
+            icon.setPixmap(qta.icon(mode['icon'], color=mode['color']).pixmap(24, 24))
+            header.addWidget(icon)
+            name = QLabel(mode['name'])
+            name.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+            header.addWidget(name)
+            header.addStretch()
+            card_layout.addLayout(header)
 
-            modi_layout.addLayout(mode_row)
+            # Speed Badge
+            speed_badge = QLabel(mode['speed'])
+            speed_badge.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            speed_badge.setStyleSheet(f"""
+                background: {mode['color']};
+                color: white;
+                padding: 4px 8px;
+                border-radius: 4px;
+            """)
+            speed_badge.setFixedWidth(110)
+            speed_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card_layout.addWidget(speed_badge)
 
-        layout.addWidget(modi_card)
+            # Description
+            desc = QLabel(mode['desc'])
+            desc.setFont(QFont("Segoe UI", 10))
+            desc.setStyleSheet(f"color: {self.colors['text_light']};")
+            card_layout.addWidget(desc)
 
-        # Log Card
-        log_card = MaterialCard(elevation=2)
+            # Best for
+            best = QLabel(f"Ideal für: {mode['best_for']}")
+            best.setFont(QFont("Segoe UI", 9))
+            best.setStyleSheet(f"color: {mode['color']}; font-weight: bold;")
+            card_layout.addWidget(best)
+
+            card_layout.addStretch()
+            modi_row.addWidget(card)
+
+        layout.addLayout(modi_row)
+
+        # ══════════════════════════════════════════════════════════
+        # PROFI-TIPPS - Einfache Liste
+        # ══════════════════════════════════════════════════════════
+        tips_card = MaterialCard(elevation=1)
+        tips_layout = QVBoxLayout(tips_card)
+        tips_layout.setSpacing(10)
+
+        tips_title = QLabel("Profi-Tipps")
+        tips_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        tips_layout.addWidget(tips_title)
+
+        tips = [
+            ("Automatisch", "Text wird direkt eingefügt UND in die Zwischenablage kopiert (Strg+V)"),
+            ("Stichpunkte", "Sagen Sie \"Stichpunkte\" am Anfang für eine Aufzählung"),
+            ("Paragraphen", "\"Paragraf vier drei drei BGB\" wird zu § 433 BGB"),
+            ("Wiederholen", "Der Wiederholen-Button verarbeitet die letzte Aufnahme nochmal"),
+        ]
+
+        for title, desc in tips:
+            tip_row = QHBoxLayout()
+            title_label = QLabel(f"{title}:")
+            title_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            title_label.setFixedWidth(100)
+            tip_row.addWidget(title_label)
+
+            desc_label = QLabel(desc)
+            desc_label.setFont(QFont("Segoe UI", 10))
+            desc_label.setStyleSheet(f"color: {self.colors['text_light']};")
+            tip_row.addWidget(desc_label)
+            tip_row.addStretch()
+
+            tips_layout.addLayout(tip_row)
+
+        layout.addWidget(tips_card)
+
+        # ══════════════════════════════════════════════════════════
+        # DEBUG-LOG - Versteckt/Kompakt
+        # ══════════════════════════════════════════════════════════
+        log_card = MaterialCard(elevation=1)
         log_layout = QVBoxLayout(log_card)
-        log_layout.setSpacing(12)
+        log_layout.setSpacing(8)
 
         log_header = QHBoxLayout()
-        log_title = QLabel("Debug-Log")
-        log_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        log_title = QLabel("Technisches Log")
+        log_title.setFont(QFont("Segoe UI", 11))
+        log_title.setStyleSheet(f"color: {self.colors['text_light']};")
         log_header.addWidget(log_title)
-
         log_header.addStretch()
 
         refresh_log_btn = self.create_action_button("Aktualisieren", "fa5s.sync", "ghost")
         refresh_log_btn.clicked.connect(self.refresh_log)
         log_header.addWidget(refresh_log_btn)
-
         log_layout.addLayout(log_header)
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(200)
+        self.log_text.setMaximumHeight(100)
         self.log_text.setObjectName("TranscriptText")
-        self.log_text.setFont(QFont("Consolas", 9))
+        self.log_text.setFont(QFont("Consolas", 8))
         log_layout.addWidget(self.log_text)
 
         layout.addWidget(log_card)
@@ -2029,6 +2379,47 @@ class ACTScriber(QMainWindow):
         if text:
             _get_pyperclip().copy(text)
 
+    def repeat_last_transcription(self):
+        """Re-runs full transcription + LLM processing on last audio"""
+        last_audio = self.recorder.get_last_recording()
+        if not last_audio:
+            self.data.log("No last recording available", "warning")
+            return
+
+        self.repeat_btn.setEnabled(False)
+        self.overlay.set_status("processing")
+
+        # Create a copy of the audio file so it doesn't get deleted
+        import shutil
+        temp_copy = last_audio.replace("last_recording", "repeat_temp")
+        try:
+            shutil.copy2(last_audio, temp_copy)
+        except Exception as e:
+            self.data.log(f"Could not copy audio: {e}", "error")
+            self.repeat_btn.setEnabled(True)
+            return
+
+        # Reuse the existing TranscriptionWorker
+        worker = TranscriptionWorker(self.api, self.config, self.data, temp_copy)
+        worker.finished.connect(self._on_repeat_finished)
+        worker.error.connect(self._on_repeat_error)
+        worker.start()
+        self._repeat_worker = worker
+
+    def _on_repeat_finished(self, text, raw_transcript=None):
+        """Handler for repeat transcription completion"""
+        self.transcript_text.setPlainText(text)
+        if raw_transcript:
+            self._last_raw_transcript = raw_transcript
+        self.overlay.set_status("success")
+        self.repeat_btn.setEnabled(True)
+
+    def _on_repeat_error(self, error):
+        """Handler for repeat transcription error"""
+        self.data.log(f"Repeat error: {error}", "error")
+        self.overlay.set_status("error")
+        self.repeat_btn.setEnabled(True)
+
     def refine_text(self, style, custom_instruction=None):
         """Startet Nachbearbeitung"""
         text = self.transcript_text.toPlainText()
@@ -2089,27 +2480,39 @@ class ACTScriber(QMainWindow):
             self.recorder.start_monitor(device_index=device_id, device_name=self.config.get("device_name"))
 
     def refresh_devices(self):
-        """Lädt Geräteliste neu und stellt Auswahl wieder her"""
-        # Block Signals
+        """Lädt Geräteliste neu im Hintergrund (blockiert UI nicht)"""
+        # Show loading state
         self.mic_combo.blockSignals(True)
         self.mic_combo.clear()
-        
-        devices = self.recorder.reload_devices()
-        
+        self.mic_combo.addItem("Lade Geräte...", None)
+        self.mic_combo.setEnabled(False)
+        self.mic_combo.blockSignals(False)
+
+        # Start background worker
+        self._device_worker = DeviceLoadWorker(self.recorder)
+        self._device_worker.finished.connect(self._on_devices_loaded)
+        self._device_worker.start()
+
+    def _on_devices_loaded(self, devices):
+        """Callback wenn Geräte geladen wurden"""
+        self.mic_combo.blockSignals(True)
+        self.mic_combo.clear()
+        self.mic_combo.setEnabled(True)
+
         # Gespeicherte Werte
         saved_id = self.config.get("device_index")
         saved_name = self.config.get("device_name")
-        
+
         target_index = -1
-        
+
         for dev in devices:
             self.mic_combo.addItem(dev["name"], dev["id"])
-            
+
             # Match Logic:
             # 1. Exact Name Match (Best for Docking Station)
             if saved_name and dev["name"] == saved_name:
                 target_index = self.mic_combo.count() - 1
-            # 2. ID Match (Fallback if name changed but ID kept - unlikely but possible)
+            # 2. ID Match (Fallback if name changed but ID kept)
             elif target_index == -1 and saved_id is not None and dev["id"] == saved_id:
                 target_index = self.mic_combo.count() - 1
 
@@ -2121,22 +2524,13 @@ class ACTScriber(QMainWindow):
             if new_id != saved_id:
                 print(f"[Device] ID Changed for Same Device ({saved_id} -> {new_id}). Updating Config.")
                 self.config.set("device_index", new_id)
-        
+
         self.mic_combo.blockSignals(False)
 
     def show_mic_test_dialog(self):
         """Öffnet den Dialog zum Testen aller Mikrofone"""
-        # Stop current monitor to free resources
-        self.recorder.stop_monitor()
-        
-        dialog = MicrophoneTestDialog(self)
+        dialog = MicrophoneTestDialog(self, main_recorder=self.recorder)
         dialog.exec()
-        
-        # Restart monitor after dialog closes
-        self.recorder.start_monitor(
-            device_index=self.config.get("device_index"),
-            device_name=self.config.get("device_name")
-        )
 
 
     def save_sensitivity(self, value):
@@ -2255,11 +2649,14 @@ class ACTScriber(QMainWindow):
 
     def _on_hotkey_set(self, key_name):
         """Signal handler for hotkey being set - runs in main thread"""
-        display_name = key_name.upper().replace("_", " + ")
+        display_name = format_hotkey_name(key_name)
         self.hotkey_btn.setText(f"Aktuell: {display_name}")
         self.hotkey_info_label.setText("Gespeichert!")
         self.hotkey_info_label.setStyleSheet(f"color: {self.colors['success']};")
         self.hotkey_badge.setText(display_name)
+        # Update support page hotkey display (large keyboard badge)
+        if hasattr(self, '_hotkey_badge_large') and self._hotkey_badge_large:
+            self._hotkey_badge_large.setText(display_name)
 
     def _on_overlay_status(self, status):
         """Signal handler for overlay status - runs in main thread"""
@@ -2300,9 +2697,14 @@ class ACTScriber(QMainWindow):
 
         self.current_worker = worker
 
-    def on_transcription_finished(self, text):
+    def on_transcription_finished(self, text, raw_transcript=None):
         """Handler für fertige Transkription"""
         self.transcript_text.setPlainText(text)
+        if raw_transcript:
+            self._last_raw_transcript = raw_transcript
+        # Enable repeat button if last recording exists
+        if self.recorder.get_last_recording():
+            self.repeat_btn.setEnabled(True)
         self.overlay.set_status("success")
         # Update-Check im Hintergrund nach erfolgreicher Transkription
         QTimer.singleShot(2000, self.check_for_updates_async)

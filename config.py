@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 APP_NAME = "act Scriber"
-APP_VERSION = "1.4.0"
+APP_VERSION = "2.0.3"
 APP_DATA_DIR = os.path.join(os.getenv("LOCALAPPDATA"), APP_NAME)
 if not os.path.exists(APP_DATA_DIR):
     os.makedirs(APP_DATA_DIR)
@@ -96,6 +96,7 @@ DEFAULT_CONFIG = {
     "api_key": os.getenv("GROQ_API_KEY", ""),
     "custom_instructions": "",  # Persönliche Präferenzen für alle LLM-Aufrufe
     "custom_buttons": [],  # Benutzerdefinierte Schnell-Buttons (max. 4)
+    "last_seen_version": None,  # Zeigt Support-Seite nach Update
 }
 
 class ConfigManager:
@@ -134,4 +135,64 @@ class ConfigManager:
     def get_language_code(self):
         lang_name = self.get("language")
         return LANGUAGE_CODES.get(lang_name, "de")
+
+    def get_hotkey_display_name(self):
+        """Gibt lesbaren Namen für den aktuellen Hotkey zurück"""
+        return format_hotkey_name(self.get("hotkey"))
+
+
+def format_hotkey_name(hotkey_code):
+    """Wandelt internen Hotkey-Code in lesbaren deutschen Namen um"""
+    if not hotkey_code:
+        return "Nicht gesetzt"
+
+    # Mapping für spezielle Tasten
+    HOTKEY_NAMES = {
+        # Strg-Tasten
+        "ctrl_r": "Rechte Strg-Taste",
+        "ctrl_l": "Linke Strg-Taste",
+        # Alt-Tasten
+        "alt_r": "Rechte Alt-Taste",
+        "alt_l": "Linke Alt-Taste",
+        "alt_gr": "AltGr-Taste",
+        # Shift-Tasten
+        "shift_r": "Rechte Shift-Taste",
+        "shift_l": "Linke Shift-Taste",
+        # Windows-Tasten
+        "cmd_r": "Rechte Windows-Taste",
+        "cmd_l": "Linke Windows-Taste",
+        "cmd": "Windows-Taste",
+        # Sondertasten
+        "caps_lock": "Feststelltaste",
+        "scroll_lock": "Rollen-Taste",
+        "pause": "Pause-Taste",
+        "insert": "Einfg-Taste",
+        "delete": "Entf-Taste",
+        "home": "Pos1-Taste",
+        "end": "Ende-Taste",
+        "page_up": "Bild↑-Taste",
+        "page_down": "Bild↓-Taste",
+        "print_screen": "Druck-Taste",
+        "num_lock": "Num-Taste",
+        # Funktionstasten
+        "f1": "F1", "f2": "F2", "f3": "F3", "f4": "F4",
+        "f5": "F5", "f6": "F6", "f7": "F7", "f8": "F8",
+        "f9": "F9", "f10": "F10", "f11": "F11", "f12": "F12",
+        # Escape
+        "esc": "Escape-Taste",
+        "escape": "Escape-Taste",
+        # Tab
+        "tab": "Tab-Taste",
+        # Space
+        "space": "Leertaste",
+    }
+
+    key = hotkey_code.lower()
+
+    # Direkte Übersetzung wenn vorhanden
+    if key in HOTKEY_NAMES:
+        return HOTKEY_NAMES[key]
+
+    # Fallback: Formatiere als "Taste X"
+    return f"Taste {hotkey_code.upper()}"
 

@@ -3,6 +3,8 @@ import os
 import time
 import wave
 import struct
+import shutil
+from collections import deque
 from config import APP_DATA_DIR
 
 MAX_DURATION_SECONDS = 600
@@ -43,6 +45,7 @@ class AudioRecorder:
         self.is_recording = False
         self.start_time = 0
         self.filename = os.path.join(APP_DATA_DIR, "temp_recording.wav")
+        self.last_recording_file = os.path.join(APP_DATA_DIR, "last_recording.wav")
         self._devices_cache = None
         self.device_index = device_index
         self.audio_sensitivity = audio_sensitivity if audio_sensitivity else MIN_AUDIO_RMS
@@ -53,6 +56,15 @@ class AudioRecorder:
         self._current_device_index = None
         # Für automatische Geräte-Wiederherstellung
         self._last_device_name = None
+        # Pre-recording buffer (500ms before button press)
+        self._pre_buffer_ms = 500
+        self._pre_buffer_samples = int(self.sample_rate * self._pre_buffer_ms / 1000)
+        # Use deque with maxlen for O(1) append/pop instead of O(n) list.pop(0)
+        self._pre_buffer_max_chunks = max(1, self._pre_buffer_samples // 1024 + 2)
+        self._pre_buffer = deque(maxlen=self._pre_buffer_max_chunks)
+        # Cached numpy functions for callback performance
+        self._np_sqrt = None
+        self._np_mean = None
 
     def get_input_devices(self, test_functionality=True):
         """Gibt eine gefilterte Liste relevanter Eingabegeräte zurück: [{'id': 1, 'name': 'Mic X'}]
@@ -87,8 +99,9 @@ class AudioRecorder:
                 name = dev["name"]
                 name_lower = name.lower()
                 
-                # Duplikate überspringen (exakt gleicher Name)
-                if name in seen_names:
+                # Duplikate überspringen (erste 25 Zeichen vergleichen - Namen werden manchmal abgeschnitten)
+                name_key = name[:25]
+                if name_key in seen_names:
                     continue
                 
                 # Ausschluss-Keywords prüfen
@@ -109,7 +122,7 @@ class AudioRecorder:
                         print(f"[Audio] Device {i} '{name}' nicht verfügbar - übersprungen")
                         continue
                 
-                seen_names.add(name)
+                seen_names.add(name_key)
                 input_devices.append({"id": i, "name": name})
         
         self._devices_cache = input_devices
@@ -133,8 +146,12 @@ class AudioRecorder:
         except Exception:
             return False
 
-    def reload_devices(self):
-        """Löscht den Cache und zwingt zum erneuten Einlesen der Geräte"""
+    def reload_devices(self, test_functionality=False):
+        """Löscht den Cache und zwingt zum erneuten Einlesen der Geräte
+
+        Args:
+            test_functionality: False = schnell (für Dropdown), True = mit Test (langsam)
+        """
         self._devices_cache = None
 
         # Force sounddevice to refresh its internal device list
@@ -146,7 +163,8 @@ class AudioRecorder:
         except:
             pass  # Some versions don't have these methods
 
-        return self.get_input_devices()
+        # Skip device testing for faster dropdown population
+        return self.get_input_devices(test_functionality=test_functionality)
 
     def is_device_available(self, device_index):
         """Prüft, ob ein Gerät mit der gegebenen ID noch verfügbar und funktionsfähig ist"""
@@ -199,48 +217,15 @@ class AudioRecorder:
         print("[Audio] Device recovery failed, falling back to default device")
         return None, True
 
-    def start_monitor(self, device_index=None):
-        """Startet einen Stream nur zur Pegelüberwachung (ohne Aufnahme)"""
-        if self.monitor_stream or self.is_recording:
-            return
-            
-        sd = _get_sounddevice()
-        np = _get_numpy()
-        
-        def callback(indata, frames, time_info, status):
-            if indata.size > 0:
-                self.current_rms = float(np.sqrt(np.mean(indata**2)))
-
-        try:
-            self.monitor_stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                device=device_index,
-                channels=1,
-                callback=callback
-            )
-            self.monitor_stream.start()
-        except:
-            pass
-
-    def stop_monitor(self):
-        """Stoppt den Monitor-Stream"""
-        if self.monitor_stream:
-            try:
-                self.monitor_stream.stop()
-                self.monitor_stream.close()
-            except:
-                pass
-            self.monitor_stream = None
-        self.current_rms = 0
-        # Restart unified stream if it was running
-        self._restart_unified_stream()
-
     def _unified_callback(self, indata, frames, time_info, status):
         """Ein Callback für sowohl Monitoring als auch Recording"""
-        np = _get_numpy()
         if indata.size > 0:
-            self.current_rms = float(np.sqrt(np.mean(indata**2)))
-            
+            # Use cached numpy functions for performance
+            self.current_rms = self._np_sqrt(self._np_mean(indata * indata))
+
+            # Always keep pre-buffer filled - deque auto-removes oldest (O(1))
+            self._pre_buffer.append(indata.copy())
+
             # Nur bei aktiver Aufnahme Daten speichern
             if self.is_recording:
                 if len(self.recording) * frames / self.sample_rate < MAX_DURATION_SECONDS:
@@ -263,6 +248,11 @@ class AudioRecorder:
 
     def _start_unified_stream(self, device_index, device_name=None):
         """Startet den unified stream auf einem Gerät mit automatischem Fallback"""
+        # Pre-load numpy BEFORE stream starts to avoid blocking in callback
+        np = _get_numpy()
+        self._np_sqrt = np.sqrt
+        self._np_mean = np.mean
+
         sd = _get_sounddevice()
 
         # Speichere Präferenz für späteren Fallback
@@ -336,15 +326,22 @@ class AudioRecorder:
         if self.is_recording:
             return
 
-        self.recording = []
-        self.start_time = time.time()
-        
+        # Prepend pre-buffer (last 500ms before button press)
+        if self._pre_buffer:
+            self.recording = list(self._pre_buffer)  # Copy pre-buffer
+            pre_samples = sum(len(chunk) for chunk in self.recording)
+            print(f"[Audio] Pre-buffer: {pre_samples} samples ({pre_samples/self.sample_rate*1000:.0f}ms)")
+        else:
+            self.recording = []
+
+        self.start_time = time.time() - (self._pre_buffer_ms / 1000)  # Adjust for pre-buffer
+
         # Wenn unified stream läuft: SOFORT aufnehmen (zero latency!)
         if self._unified_stream:
             print("[Audio] INSTANT recording start (unified stream active)")
             self.is_recording = True
             return
-        
+
         # Fallback: Unified stream nicht aktiv, starte ihn mit Recording
         print(f"[Audio] Starting unified stream for recording on device: {device_index}")
         self._start_unified_stream(device_index)
@@ -400,6 +397,13 @@ class AudioRecorder:
             wf.setsampwidth(2)  # 16-bit = 2 bytes
             wf.setframerate(self.sample_rate)
             wf.writeframes(wav_data.tobytes())
+
+        # Save a copy as last_recording for repeat functionality
+        try:
+            shutil.copy2(self.filename, self.last_recording_file)
+            print(f"[Audio] Last recording saved: {self.last_recording_file}")
+        except Exception as e:
+            print(f"[Audio] Could not save last recording: {e}")
 
         file_size = os.path.getsize(self.filename)
         print(f"[Audio] Saved: {self.filename} ({file_size} bytes)")
@@ -505,6 +509,12 @@ class AudioRecorder:
                     print(f"[Audio] Health check switch error: {e}")
 
         return result
+
+    def get_last_recording(self):
+        """Returns path to last recording if it exists"""
+        if os.path.exists(self.last_recording_file):
+            return self.last_recording_file
+        return None
 
     def close(self):
         """Schließt den Recorder und gibt Ressourcen frei."""
