@@ -38,7 +38,7 @@ import hashlib
 # KONFIGURATION - NUR HIER ÄNDERN FÜR UPDATES!
 # ==============================================================================
 
-VERSION = "1.3.9"                          # <- Für Updates: Nur diese Zeile ändern!
+VERSION = "2.0.3"                          # <- Für Updates: Nur diese Zeile ändern!
 APP_NAME = "actScriber"                    # Interner Name (keine Leerzeichen)
 APP_DISPLAY_NAME = "act Scriber"           # Anzeigename
 MANUFACTURER = "act legal IT"

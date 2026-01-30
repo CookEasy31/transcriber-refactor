@@ -114,17 +114,26 @@ HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTh
 
 ### Version erhöhen
 
-1. Version in allen Dateien aktualisieren:
-```python
-# config.py
-APP_VERSION = "1.3.9"
+**WICHTIG: Bei Multi-System-Entwicklung immer `git pull` vor Änderungen!**
 
-# build_nuitka.py / build_wix.py / build_msi.py
-VERSION = "1.3.9"
+1. Version in **allen 4 Dateien** aktualisieren:
+```python
+# config.py (WICHTIGSTE - wird zur Laufzeit verwendet)
+APP_VERSION = "2.0.3"
+
+# build_nuitka.py
+VERSION = "2.0.3"
+
+# build_wix.py
+VERSION = "2.0.3"
+
+# build_msi.py
+VERSION = "2.0.3"
 ```
 
-2. Build erstellen: `python build_nuitka.py`
-3. GitHub Release erstellen mit Tag `v1.3.9`
+2. Build erstellen: `python build_wix.py` (oder `build_nuitka.py` mit MSVC)
+3. GitHub Release erstellen: `gh release create v2.0.3 actScriber-2.0.3-win64.msi --title "v2.0.3 - Titel"`
+4. Änderungen committen und pushen
 
 ## Installation (Entwicklung)
 
@@ -140,13 +149,18 @@ python main.py
 
 ```bash
 # Voraussetzungen:
-# - WiX Toolset v6: dotnet tool install --global wix
-# - Nuitka: uv pip install nuitka ordered-set zstandard
+# - WiX Toolset v6 + Extensions:
+dotnet tool install --global wix
+wix extension add WixToolset.UI.wixext --global
+wix extension add WixToolset.Util.wixext --global
 
-# Build mit Nuitka (empfohlen - schneller, kleiner)
-python build_nuitka.py
+# - cx_Freeze:
+pip install cx_Freeze
 
-# Alternativ: Build mit cx_Freeze
+# Build mit cx_Freeze (empfohlen - funktioniert mit Python 3.13)
+python build_wix.py
+
+# Alternativ: Build mit Nuitka (braucht Visual Studio Build Tools)
 python build_wix.py
 ```
 

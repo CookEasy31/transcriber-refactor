@@ -34,7 +34,7 @@ import hashlib
 # KONFIGURATION
 # ==============================================================================
 
-VERSION = "1.4.0"
+VERSION = "2.0.3"
 APP_NAME = "actScriber"
 APP_DISPLAY_NAME = "act Scriber"
 MANUFACTURER = "act legal IT"
@@ -114,6 +114,7 @@ def run_nuitka():
         sys.executable, "-m", "nuitka",
         "--standalone",
         "--assume-yes-for-downloads",  # Auto-accept dependency downloads
+        "--msvc=latest",  # Use MSVC instead of MinGW (required for Python 3.13)
         "--onefile-tempdir-spec=%TEMP%/actScriber",
         f"--output-dir={BUILD_DIR}",
         f"--output-filename={APP_NAME}.exe",
