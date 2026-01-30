@@ -167,8 +167,9 @@ python build_wix.py
 Output: `actScriber-X.X.X-win64.msi` (~50 MB mit Nuitka, ~200 MB mit cx_Freeze)
 
 ### Installation
-- **Per-User Installation**: Installiert nach `%LOCALAPPDATA%\actScriber\`
-- **Keine Admin-Rechte** erforderlich
+- **Installation nach**: `C:\Program Files\actScriber\`
+- **Admin-Rechte** nur bei Erstinstallation erforderlich
+- **Auto-Updates ohne Admin**: Ordner-Berechtigungen werden bei Installation gesetzt
 - User können selbstständig Updates durchführen
 
 ## Environment Variables

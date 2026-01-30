@@ -194,8 +194,8 @@ def install_update(msi_path: str) -> None:
     # Absoluten Pfad sicherstellen
     msi_path = os.path.abspath(msi_path)
 
-    # Installationspfad der neuen Version (per-user installation)
-    install_dir = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'actScriber')
+    # Installationspfad der neuen Version (Program Files)
+    install_dir = os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), 'actScriber')
     exe_path = os.path.join(install_dir, 'actScriber.exe')
 
     try:

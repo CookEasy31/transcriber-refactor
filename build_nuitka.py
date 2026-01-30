@@ -5,7 +5,8 @@ actScriber Build-System mit Nuitka + WiX v6
 
 Features:
 - Nuitka kompiliert Python zu C (schneller, kleiner als cx_Freeze)
-- Per-User Installation (KEINE Admin-Rechte nötig!)
+- Installation nach C:\Program Files\actScriber\ (Admin-Rechte bei Erstinstallation)
+- Auto-Updates OHNE Admin-Rechte (Ordner-Berechtigungen werden gesetzt)
 - GUI Installer (WixUI_InstallDir) mit Willkommens-Dialog
 - Auto-Upgrade Logik
 
@@ -34,7 +35,7 @@ import hashlib
 # KONFIGURATION
 # ==============================================================================
 
-VERSION = "2.0.3"
+VERSION = "2.0.4"
 APP_NAME = "actScriber"
 APP_DISPLAY_NAME = "act Scriber"
 MANUFACTURER = "act legal IT"
@@ -348,7 +349,7 @@ def generate_wxs(build_folder: Path) -> str:
     Version="{VERSION}"
     UpgradeCode="{UPGRADE_CODE}"
     ProductCode="{PRODUCT_CODE}"
-    Scope="perUser"
+    Scope="perMachine"
     Compressed="yes"
     Language="1031">
 
@@ -375,6 +376,7 @@ def generate_wxs(build_folder: Path) -> str:
       <ComponentGroupRef Id="AppComponents" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="DesktopShortcut" />
+      <ComponentRef Id="InstallFolderPermissions" />
     </Feature>
 
     <Icon Id="AppIcon.ico" SourceFile="icon.ico" />
@@ -383,8 +385,17 @@ def generate_wxs(build_folder: Path) -> str:
 
   </Package>
 
+  <!-- Ordner-Berechtigungen: Users bekommen Schreibrechte für Auto-Updates -->
   <Fragment>
-    <StandardDirectory Id="LocalAppDataFolder">
+    <Component Id="InstallFolderPermissions" Directory="INSTALLFOLDER" Guid="{generate_guid()}">
+      <CreateFolder>
+        <util:PermissionEx User="Users" GenericAll="yes" />
+      </CreateFolder>
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="{APP_NAME}">
 {dir_elements}
       </Directory>
@@ -492,12 +503,12 @@ def print_summary():
      {msi_path}
 
   Features dieser MSI:
-     - Per-User Installation (KEINE Admin-Rechte nötig!)
-     - Installiert nach: %LOCALAPPDATA%\\{APP_NAME}\\
+     - Installiert nach: C:\\Program Files\\{APP_NAME}\\
+     - Admin-Rechte nur bei Erstinstallation noetig
+     - Auto-Updates OHNE Admin (Ordner-Berechtigungen gesetzt)
      - Kompiliert mit Nuitka (schneller als cx_Freeze)
      - GUI-Installer mit Willkommens-Dialog
-     - Automatisches Schließen der App bei Updates
-     - Auto-Updates ohne IT-Support möglich!
+     - Automatisches Schliessen der App bei Updates
 
   Installation:
      Doppelklick auf {OUTPUT_MSI}

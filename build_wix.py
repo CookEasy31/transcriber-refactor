@@ -38,7 +38,7 @@ import hashlib
 # KONFIGURATION - NUR HIER ÄNDERN FÜR UPDATES!
 # ==============================================================================
 
-VERSION = "2.0.3"                          # <- Für Updates: Nur diese Zeile ändern!
+VERSION = "2.0.4"                          # <- Für Updates: Nur diese Zeile ändern!
 APP_NAME = "actScriber"                    # Interner Name (keine Leerzeichen)
 APP_DISPLAY_NAME = "act Scriber"           # Anzeigename
 MANUFACTURER = "act legal IT"
@@ -304,7 +304,7 @@ def generate_wxs(build_folder: Path) -> str:
     Version="{VERSION}"
     UpgradeCode="{UPGRADE_CODE}"
     ProductCode="{PRODUCT_CODE}"
-    Scope="perUser"
+    Scope="perMachine"
     Compressed="yes"
     Language="1031">
     
@@ -351,6 +351,7 @@ def generate_wxs(build_folder: Path) -> str:
       <ComponentGroupRef Id="AppComponents" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="DesktopShortcut" />
+      <ComponentRef Id="InstallFolderPermissions" />
     </Feature>
     
     <!-- ================================================================== -->
@@ -365,8 +366,19 @@ def generate_wxs(build_folder: Path) -> str:
   <!-- ====================================================================== -->
   <!-- VERZEICHNISSTRUKTUR                                                   -->
   <!-- ====================================================================== -->
+  <!-- ====================================================================== -->
+  <!-- ORDNER-BERECHTIGUNGEN: Users bekommen Schreibrechte für Auto-Updates -->
+  <!-- ====================================================================== -->
   <Fragment>
-    <StandardDirectory Id="LocalAppDataFolder">
+    <Component Id="InstallFolderPermissions" Directory="INSTALLFOLDER" Guid="{generate_guid()}">
+      <CreateFolder>
+        <util:PermissionEx User="Users" GenericAll="yes" />
+      </CreateFolder>
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="{APP_NAME}">
 {dir_elements}
       </Directory>
@@ -483,8 +495,9 @@ def print_summary():
      {msi_path}
 
   Features dieser MSI:
-     - Per-User Installation (KEINE Admin-Rechte noetig!)
-     - Installiert nach: %LOCALAPPDATA%\\actScriber\\
+     - Installiert nach: C:\\Program Files\\actScriber\\
+     - Admin-Rechte nur bei Erstinstallation noetig
+     - Auto-Updates OHNE Admin (Ordner-Berechtigungen gesetzt)
      - GUI-Installer mit Willkommens-Dialog
      - Lizenzvereinbarung
      - Installationspfad-Auswahl
@@ -492,7 +505,6 @@ def print_summary():
      - Automatisches Schliessen der App bei Updates
      - Startmenue + Desktop Verknuepfung
      - Systemsteuerungs-Eintrag mit Icon
-     - Auto-Updates ohne IT-Support moeglich!
 
   Installation:
      Doppelklick auf {OUTPUT_MSI}
