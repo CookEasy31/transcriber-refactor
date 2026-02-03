@@ -292,3 +292,121 @@ Privates Repository - Interne Nutzung
 3. Build-Skripte + updater.py konsistent machen
 4. Killswitch implementieren
 5. Sauber testen BEVOR Release
+
+---
+
+## SESSION-BERICHT 03.02.2026
+
+### Was wurde gemacht
+
+#### 1. ZIP-basierte Updates implementiert (statt MSI-Extraktion)
+**Problem:** MSI-Extraktion via `msiexec /a` war unzuverlässig (Pfade nicht vorhersagbar).
+
+**Lösung:**
+- `updater.py` bevorzugt jetzt ZIP-Downloads
+- Extraktion via PowerShell `Expand-Archive` (zuverlässig, in Windows eingebaut)
+- MSI bleibt als Fallback
+
+#### 2. Robustes Update-Script mit taskkill
+**Problem:** "Unzulässiger SHARE-Vorgang" - App war beim Kopieren noch nicht beendet.
+
+**Lösung:** Neues Batch-Script mit:
+```batch
+[1/5] taskkill /F /IM actScriber.exe     # Aktiv beenden
+[2/5] Warte-Schleife (max 30 Sek)        # Sicherstellen dass Prozess weg
+[3/5] Expand-Archive / xcopy             # Dateien kopieren
+[4/5] Cleanup                            # Temp-Dateien löschen
+[5/5] App neu starten                    # Fertig
+```
+
+Plus: Schöne formatierte Ausgabe im CMD-Fenster für User.
+
+#### 3. Vercel Cold Start Prevention (Warmup)
+**Problem:** Erste API-Anfrage nach 10-15 Min Inaktivität war langsam (Cold Start).
+
+**Lösung:**
+- Neuer Endpoint: `GET /api/health` → `{"status": "warm"}`
+- Bei Hotkey-Druck: Fire-and-forget Ping (wenn letzter Ping > 9 Min her)
+- Läuft async im Hintergrund während User spricht
+- Vercel ist warm wenn Aufnahme fertig
+
+**Dateien geändert:**
+- `actscriber-proxy/api/health.py` (neu)
+- `api_handler.py` (`warmup_proxy_if_needed()`)
+- `main.py` (Warmup bei Hotkey-Druck)
+
+#### 4. Build-System erweitert
+`build_update.py` unterstützt jetzt:
+```bash
+python build_update.py 2.1.4           # Nur MSI
+python build_update.py 2.1.4 --zip     # Nur ZIP
+python build_update.py 2.1.4 --upload  # MSI + GitHub Upload
+python build_update.py 2.1.4 --zip --upload  # ZIP + GitHub Upload
+```
+
+### Aktueller Stand
+
+| Was | Version/Status |
+|-----|----------------|
+| `config.py` | 2.1.4 |
+| GitHub Latest | v1.4.0 (Kill-Switch von früher) |
+| GitHub Draft | v2.1.4 (für IT-Rollout) |
+| Vercel Proxy | Deployed mit /api/health |
+
+### Installationspfade (FINAL ENTSCHIEDEN)
+
+```
+Installation:    C:\Program Files\actScriber\     (Admin bei Install)
+                 → PermissionEx User="Users" GenericAll="yes"
+                 → User können danach ohne Admin updaten!
+
+Einstellungen:   %LOCALAPPDATA%\act Scriber\      (MIT Leerzeichen!)
+                 ├── settings.json
+                 ├── history.db
+                 └── updates\
+
+Alte Installation: %LOCALAPPDATA%\actScriber\     (OHNE Leerzeichen)
+                   → Muss bei Rollout gelöscht werden!
+```
+
+### v2.1.4 Release (Draft - nicht öffentlich)
+
+**Download:** https://github.com/CookEasy31/transcriber-refactor/releases/tag/untagged-8a5211fd905785f9d184
+
+**Enthält:**
+- ZIP-basierter Updater
+- Warmup für Vercel Cold Start
+- taskkill + Warte-Schleife für saubere Updates
+- Formatierte CMD-Ausgabe beim Update
+
+### IT-Rollout Plan
+
+```bash
+# 1. Deinstallieren (alle Clients)
+- "act Scriber" über Systemsteuerung entfernen
+- Ordner löschen: %LOCALAPPDATA%\actScriber\  (alte Installation)
+- NICHT löschen: %LOCALAPPDATA%\act Scriber\  (Einstellungen!)
+
+# 2. Installieren
+msiexec /i actScriber-2.1.4-win64.msi /qn
+
+# 3. Fertig
+- App in: C:\Program Files\actScriber\
+- Shortcuts auf Desktop + Startmenü
+- User-Rechte für künftige Updates gesetzt
+```
+
+### Nächste Schritte
+
+1. **IT-Rollout durchführen** (manuell via IT-Tool)
+2. **Testen** auf einem Client zuerst
+3. **Später:** Wenn Update gewünscht:
+   - Neue Version bauen (z.B. v2.1.5)
+   - ZIP erstellen und als GitHub Release veröffentlichen
+   - Clients laden automatisch herunter
+
+### Wichtige Regeln (unverändert)
+
+- **NIEMALS** `gh release create` ohne explizite User-Bestätigung
+- Draft Releases sind sicher (Clients sehen sie nicht)
+- Erst publizieren wenn IT-Rollout abgeschlossen
