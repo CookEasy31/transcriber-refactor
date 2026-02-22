@@ -865,6 +865,7 @@ class ACTScriber(QMainWindow):
     hotkey_set_signal = Signal(str)
     overlay_status_signal = Signal(str)
     transcription_signal = Signal(str)  # For starting transcription from hotkey thread
+    no_audio_warning_signal = Signal()
     # Signals for auto-updater
     update_available_signal = Signal(dict)
     force_update_signal = Signal(dict)
@@ -883,6 +884,7 @@ class ACTScriber(QMainWindow):
         self.hotkey_set_signal.connect(self._on_hotkey_set)
         self.overlay_status_signal.connect(self._on_overlay_status)
         self.transcription_signal.connect(self._on_start_transcription)
+        self.no_audio_warning_signal.connect(self.show_no_audio_warning)
 
         # Core Components
         self.config = ConfigManager()
@@ -900,6 +902,8 @@ class ACTScriber(QMainWindow):
         self.colors = COLORS
         self.custom_buttons = []  # UI Buttons für Custom Instructions
         self._last_raw_transcript = None  # For repeat functionality
+        self._audio_warning_shown = False  # Anti-loop: nur einmal warnen
+        self._last_no_audio_warning_time = 0  # Cooldown fuer Audio-Warnung
 
         # Setup UI
         self.setup_ui()
@@ -1972,11 +1976,11 @@ class ACTScriber(QMainWindow):
         self.device_health_timer.start(10000)  # Alle 10 Sekunden
 
     def check_audio_device_health(self):
-        """Prüft periodisch ob das Audio-Device noch funktioniert (Energiesparmodus-Recovery)"""
+        """Prueft periodisch ob das Audio-Device noch funktioniert (Energiesparmodus-Recovery)"""
         if not hasattr(self, 'recorder') or self.recorder is None:
             return
 
-        # Nicht prüfen während aktiver Aufnahme
+        # Nicht pruefen waehrend aktiver Aufnahme
         if self.recorder.is_recording:
             return
 
@@ -1984,21 +1988,33 @@ class ACTScriber(QMainWindow):
             result = self.recorder.check_device_health()
 
             if result['recovered']:
-                # Device wurde gewechselt - Log und ggf. UI-Update
+                # Device wurde gewechselt - Log und UI-Update
+                self._audio_warning_shown = False  # Reset: Mic ist wieder OK
                 self.data.log(
                     f"[Audio] Device automatisch wiederhergestellt: {result['message']}",
                     "info"
                 )
-                # Optional: Status-Anzeige aktualisieren falls vorhanden
                 if hasattr(self, 'status_label'):
                     self.status_label.setText(f"Mikrofon wiederhergestellt")
 
+            elif result['healthy']:
+                # Alles OK - Reset warning flag
+                if self._audio_warning_shown:
+                    self._audio_warning_shown = False
+                    if hasattr(self, 'status_label'):
+                        self.status_label.setText("")
+
             elif not result['healthy']:
-                # Problem erkannt aber nicht behoben
-                self.data.log(
-                    f"[Audio] Device-Problem: {result['message']}",
-                    "warning"
-                )
+                # Problem erkannt aber nicht behoben - NUR EINMAL warnen
+                if not self._audio_warning_shown:
+                    self._audio_warning_shown = True
+                    self.data.log(
+                        f"[Audio] Device-Problem: {result['message']}",
+                        "warning"
+                    )
+                    if hasattr(self, 'status_label'):
+                        self.status_label.setText("Mikrofon nicht verfuegbar")
+                # KEIN QMessageBox! Kein Dialog! Nur Statustext.
 
         except Exception as e:
             self.data.log(f"[Audio] Health check error: {e}", "error")
@@ -2624,19 +2640,20 @@ class ACTScriber(QMainWindow):
 
                     if file_path == NO_AUDIO_DETECTED:
                         self.overlay_status_signal.emit("error")
-                        QTimer.singleShot(100, self.show_no_audio_warning)
+                        # Use signal for thread-safe warning (with cooldown in handler)
+                        self.no_audio_warning_signal.emit()
                     elif file_path:
-                        # Validation: Check file size (at least 2KB for valid wav header + some data)
+                        # Validation: Check file size (at least 8KB for valid wav + audio data)
                         file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
                         print(f"[Hotkey] File path: {file_path}, size: {file_size}")
-                        if file_size > 2000:
+                        if file_size > 8000:
                             self.overlay_status_signal.emit("processing")
                             # Use signal instead of QTimer for thread-safety
                             self.transcription_signal.emit(file_path)
                         else:
                             print(f"[Audio] Warning: Recording file too small or missing ({file_path})")
                             self.overlay_status_signal.emit("error")
-                            self.show_no_audio_warning()
+                            self.no_audio_warning_signal.emit()
                     else:
                         print("[Hotkey] No file returned from stop_recording")
                         self.overlay_status_signal.emit("aborted")
@@ -2668,20 +2685,27 @@ class ACTScriber(QMainWindow):
         self.start_transcription(file_path)
 
     def show_no_audio_warning(self):
-        """Zeigt Warnung bei fehlendem Audio mit hübschem Dialog"""
+        """Zeigt Warnung bei fehlendem Audio mit huebschem Dialog (max 1x pro 30s)"""
+        # Cooldown: Maximal 1 Dialog pro 30 Sekunden
+        now = time.time()
+        if now - self._last_no_audio_warning_time < 30:
+            print("[Audio] No-audio warning suppressed (cooldown)")
+            return
+        self._last_no_audio_warning_time = now
+
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setWindowTitle("🎤 Kein Audio erkannt")
+        msg.setWindowTitle("Kein Audio erkannt")
         msg.setText(
             f"<h3 style='color: {self.colors['accent']};'><b>Keine Audiosignale erkannt</b></h3>"
             "<p>Die Aufnahme enthielt keinen erkennbaren Ton.</p>"
         )
         msg.setInformativeText(
-            "<b>Mögliche Ursachen:</b><br>"
-            "• Falsches Mikrofon in den Einstellungen ausgewählt<br>"
-            "• Mikrofon ist stummgeschaltet oder defekt<br>"
-            "• Audio-Sensitivität zu niedrig eingestellt<br><br>"
-            "<b>Tipp:</b> Öffne die Einstellungen und prüfe, ob der Pegel-Balken "
+            "<b>Moegliche Ursachen:</b><br>"
+            "- Falsches Mikrofon in den Einstellungen ausgewaehlt<br>"
+            "- Mikrofon ist stummgeschaltet oder defekt<br>"
+            "- Audio-Sensitivitaet zu niedrig eingestellt<br><br>"
+            "<b>Tipp:</b> Oeffne die Einstellungen und pruefe, ob der Pegel-Balken "
             "sich bewegt, wenn du sprichst."
         )
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
