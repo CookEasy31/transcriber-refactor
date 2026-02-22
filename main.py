@@ -2620,9 +2620,14 @@ class ACTScriber(QMainWindow):
                         dev_idx = recovered_idx
 
                     if needs_restart and self.recorder._unified_stream:
-                        # Stream neu starten mit korrektem Gerät
+                        # Stream neu starten mit korrektem Geraet
                         self.recorder.stop_monitor()
-                        self.recorder._start_unified_stream(dev_idx, dev_name)
+                        new_dev = self.recorder._start_unified_stream(dev_idx, dev_name)
+                        if new_dev is None:
+                            # Kein Geraet verfuegbar - Statustext, kein Crash
+                            print("[Hotkey] No audio device available after switch")
+                            self.overlay_status_signal.emit("error")
+                            return
 
                     self.recorder.start_recording(device_index=dev_idx)
 
@@ -2798,6 +2803,11 @@ class ACTScriber(QMainWindow):
                 self.listener.stop()
             if hasattr(self, 'tray_icon') and self.tray_icon:
                 self.tray_icon.hide()
+            # Worker-Thread sauber beenden
+            if hasattr(self, 'current_worker') and self.current_worker and self.current_worker.isRunning():
+                print("[App] Waiting for worker thread to finish...")
+                self.current_worker.quit()
+                self.current_worker.wait(3000)  # Max 3 Sekunden warten
             if hasattr(self, 'recorder') and self.recorder:
                 self.recorder.close()
             if hasattr(self, 'data') and self.data:
