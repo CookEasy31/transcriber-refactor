@@ -2065,12 +2065,11 @@ class ACTScriber(QMainWindow):
 
         # Step 1
         step1_container = QFrame()
-        step1_container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #f0f2f5, stop:1 #e8eaed);
+        step1_container.setStyleSheet(f"""
+            QFrame {{
+                background: {self.colors['bg_elevated']};
                 border-radius: 8px;
-            }
+            }}
         """)
         step1 = QHBoxLayout(step1_container)
         step1.setContentsMargins(14, 10, 14, 10)
@@ -2091,12 +2090,11 @@ class ACTScriber(QMainWindow):
 
         # Step 2
         step2_container = QFrame()
-        step2_container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #f0f2f5, stop:1 #e8eaed);
+        step2_container.setStyleSheet(f"""
+            QFrame {{
+                background: {self.colors['bg_elevated']};
                 border-radius: 8px;
-            }
+            }}
         """)
         step2 = QHBoxLayout(step2_container)
         step2.setContentsMargins(14, 10, 14, 10)
@@ -2108,13 +2106,13 @@ class ACTScriber(QMainWindow):
 
         self._hotkey_badge_large = QLabel(hotkey_name)
         self._hotkey_badge_large.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-        self._hotkey_badge_large.setStyleSheet("""
-            background: #ffffff;
-            color: #1a1a1a;
+        self._hotkey_badge_large.setStyleSheet(f"""
+            background: {self.colors['bg_input']};
+            color: {self.colors['text_dark']};
             padding: 5px 12px;
             border-radius: 5px;
-            border: 1px solid #ccc;
-            border-bottom: 2px solid #aaa;
+            border: 1px solid {self.colors['border']};
+            border-bottom: 2px solid {self.colors['border']};
         """)
         step2.addWidget(self._hotkey_badge_large)
 
@@ -2126,12 +2124,11 @@ class ACTScriber(QMainWindow):
 
         # Step 3
         step3_container = QFrame()
-        step3_container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #f0f2f5, stop:1 #e8eaed);
+        step3_container.setStyleSheet(f"""
+            QFrame {{
+                background: {self.colors['bg_elevated']};
                 border-radius: 8px;
-            }
+            }}
         """)
         step3 = QHBoxLayout(step3_container)
         step3.setContentsMargins(14, 10, 14, 10)
