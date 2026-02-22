@@ -35,7 +35,7 @@ import hashlib
 # KONFIGURATION
 # ==============================================================================
 
-VERSION = "2.0.4"
+VERSION = "2.0.5"
 APP_NAME = "actScriber"
 APP_DISPLAY_NAME = "act Scriber"
 MANUFACTURER = "act legal IT"
@@ -156,6 +156,13 @@ def run_nuitka():
         "--include-module=qtawesome",
         "--include-module=dotenv",
 
+        # Lokale Projekt-Module explizit einbinden
+        "--include-module=updater",
+        "--include-module=config",
+        "--include-module=api_handler",
+        "--include-module=audio_handler",
+        "--include-module=data_handler",
+
         # Include data files
         f"--include-data-files={ICON_PATH}=icon.ico",
         f"--include-data-files={BASE_PATH / 'act_scriber_transparent.png'}=act_scriber_transparent.png",
@@ -225,6 +232,24 @@ def run_nuitka():
         sys.exit(1)
 
     print(f"   OK Executable erstellt: {dist_folder.name}")
+
+    # Verifiziere dass kritische Module enthalten sind
+    print("   Pruefe kritische Module...")
+    critical_modules = ["updater", "config", "api_handler", "audio_handler", "data_handler"]
+    missing = []
+    for mod in critical_modules:
+        # Nuitka kompiliert zu .pyd oder haelt als .py
+        found = list(dist_folder.rglob(f"{mod}*"))
+        if not found:
+            missing.append(mod)
+            print(f"   WARNUNG: {mod} nicht im Build gefunden!")
+        else:
+            print(f"   OK {mod}: {found[0].name}")
+
+    if missing:
+        print(f"   WARNUNG: Fehlende Module: {missing}")
+        print(f"   Build wird fortgesetzt - Module koennten in Executable eingebettet sein")
+
     return dist_folder
 
 def create_env_file(build_folder: Path):
