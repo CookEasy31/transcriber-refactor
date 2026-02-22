@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 APP_NAME = "act Scriber"
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.2.3"
 APP_DATA_DIR = os.path.join(os.getenv("LOCALAPPDATA"), APP_NAME)
 if not os.path.exists(APP_DATA_DIR):
     os.makedirs(APP_DATA_DIR)

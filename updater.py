@@ -196,7 +196,7 @@ def install_zip_update(zip_path: str) -> None:
         raise FileNotFoundError(f"ZIP-Datei nicht gefunden: {zip_path}")
 
     zip_path = os.path.abspath(zip_path)
-    install_dir = os.path.join(os.environ.get('PROGRAMFILES', r'C:\Program Files'), 'actScriber')
+    install_dir = os.path.join(os.environ.get('PROGRAMFILES', r'C:\Program Files'), 'act Scriber')
     exe_path = os.path.join(install_dir, 'actScriber.exe')
     log_dir = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'act Scriber')
     log_path = os.path.join(log_dir, 'update.log')
@@ -303,7 +303,7 @@ def install_msi_update(msi_path: str) -> None:
         raise FileNotFoundError(f"MSI-Datei nicht gefunden: {msi_path}")
 
     msi_path = os.path.abspath(msi_path)
-    install_dir = os.path.join(os.environ.get('PROGRAMFILES', r'C:\Program Files'), 'actScriber')
+    install_dir = os.path.join(os.environ.get('PROGRAMFILES', r'C:\Program Files'), 'act Scriber')
     exe_path = os.path.join(install_dir, 'actScriber.exe')
 
     batch_content = f'''@echo off

@@ -36,7 +36,7 @@ import hashlib
 # KONFIGURATION
 # ==============================================================================
 
-VERSION = "2.2.2"
+VERSION = "2.2.3"
 APP_NAME = "actScriber"
 APP_DISPLAY_NAME = "act Scriber"
 MANUFACTURER = "act legal IT"
@@ -423,7 +423,7 @@ def generate_wxs(build_folder: Path) -> str:
 
   <Fragment>
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="{APP_NAME}">
+      <Directory Id="INSTALLFOLDER" Name="{APP_DISPLAY_NAME}">
 {dir_elements}
       </Directory>
     </StandardDirectory>
