@@ -1,6 +1,8 @@
-# actScriber - Professionelle Sprach-zu-Text App
+# act Scriber - Professionelle Sprach-zu-Text App
 
 Desktop-Anwendung für Echtzeit-Transkription und intelligente Textverarbeitung mit KI-Unterstützung. Entwickelt für juristische und professionelle Anwendungsfälle.
+
+## Aktuelle Version: 2.2.3
 
 ## Features
 
@@ -8,15 +10,15 @@ Desktop-Anwendung für Echtzeit-Transkription und intelligente Textverarbeitung 
 - **Intelligente Formatierung**: Automatische juristische Notation (§§, Abs., Art., etc.)
 - **Übersetzungsmodus**: Echtzeit-Übersetzung in verschiedene Sprachen
 - **Dark/Light Mode**: Automatische Erkennung des Windows-Themes
-- **Auto-Updates**: Automatische Prüfung auf neue Versionen via GitHub Releases
-- **Per-User Installation**: Keine Admin-Rechte erforderlich
+- **Auto-Updates**: ZIP-basierte Updates via GitHub Releases (silent, kein Admin nötig)
+- **Vercel Warmup**: Automatischer Cold-Start-Prevention bei Hotkey-Druck
 - **Sleep-Mode Recovery**: Automatische Mikrofon-Wiederherstellung nach Energiesparmodus
 
 ## Architektur
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   actScriber    │────▶│  Vercel Proxy   │────▶│    Groq API     │
+│   act Scriber   │────▶│  Vercel Proxy   │────▶│    Groq API     │
 │   (Desktop)     │     │  (Frankfurt)    │     │  (Whisper/LLM)  │
 └─────────────────┘     └────────┬────────┘     └─────────────────┘
                                  │
@@ -31,19 +33,193 @@ Desktop-Anwendung für Echtzeit-Transkription und intelligente Textverarbeitung 
 
 | Datei | Beschreibung |
 |-------|-------------|
-| `main.py` | Haupt-UI (PySide6), ~2500 Zeilen |
+| `main.py` | Haupt-UI (PySide6) |
 | `config.py` | Konfiguration, APP_VERSION, Pfade |
 | `api_handler.py` | API-Kommunikation (Proxy oder direkt) |
 | `audio_handler.py` | Audio-Aufnahme mit Fallback-Logik + Health-Check |
 | `data_handler.py` | SQLite-Logging, History |
-| `updater.py` | GitHub Release Update-Checker + Auto-Restart |
+| `updater.py` | GitHub Release Update-Checker + ZIP-Updater |
 | `build_nuitka.py` | Nuitka Build-System (empfohlen) |
-| `build_wix.py` | cx_Freeze + WiX Build-System |
+| `build_wix.py` | WiX Build-System (alternativ) |
+| `build_msi.py` | cx_Freeze Build (legacy) |
 | `requirements.txt` | Python-Dependencies |
 
-## API Handler Konfiguration
+---
 
-Der `api_handler.py` unterstützt zwei Modi:
+## PFADE UND KONSISTENZ (WICHTIG!)
+
+### Feste Pfade — NIEMALS ändern!
+
+```
+Installation:       C:\Program Files\act Scriber\      (MIT Leerzeichen!)
+                    ├── actScriber.exe
+                    ├── .env
+                    └── (alle DLLs, Daten, etc.)
+
+Einstellungen:      %LOCALAPPDATA%\act Scriber\        (MIT Leerzeichen!)
+                    ├── settings.json
+                    ├── history.db
+                    ├── updates\
+                    └── update.log
+
+Executable-Name:    actScriber.exe                     (OHNE Leerzeichen!)
+```
+
+### Wo diese Pfade definiert sind
+
+| Pfad | Datei | Zeile/Stelle |
+|------|-------|-------------|
+| Install-Ordner MSI | `build_nuitka.py` | `APP_DISPLAY_NAME` → WiX `Directory Name=` |
+| Install-Ordner Updater (ZIP) | `updater.py` | `'act Scriber'` in `install_zip_update()` |
+| Install-Ordner Updater (MSI) | `updater.py` | `'act Scriber'` in `install_msi_update()` |
+| Einstellungs-Ordner | `config.py` | `APP_NAME = "act Scriber"` → `APP_DATA_DIR` |
+
+### Version — wo sie definiert ist
+
+Die Version muss in **allen 4 Dateien identisch** sein:
+
+```python
+# config.py          ← wird zur Laufzeit verwendet (Updater vergleicht diese!)
+APP_VERSION = "2.2.3"
+
+# build_nuitka.py    ← wird in EXE-Metadaten + Dateinamen eingebettet
+VERSION = "2.2.3"
+
+# build_wix.py       ← wird in MSI-Metadaten eingebettet
+VERSION = "2.2.3"
+
+# build_msi.py       ← legacy, trotzdem synchron halten
+VERSION = "2.2.3"
+```
+
+---
+
+## Update-System — So funktioniert es
+
+### Wie der Updater arbeitet
+
+1. App prüft alle **30 Minuten** (erster Check: 3 Sek. nach Start)
+2. Ruft `https://api.github.com/repos/CookEasy31/transcriber-refactor/releases/latest` ab
+3. Vergleicht `APP_VERSION` (config.py) mit Release `tag_name`
+4. Sucht nach `.zip` Asset (bevorzugt) oder `.msi` Asset (Fallback)
+5. Bei ZIP: Download → PowerShell-Script → wartet bis App beendet → entpackt nach `C:\Program Files\act Scriber\` → startet neu
+
+### Was ein Update TRIGGERT
+
+- Ein **veröffentlichtes** GitHub Release (NICHT Draft, NICHT Pre-Release)
+- Release-Version muss **höher** sein als `APP_VERSION` in `config.py`
+- Release muss ein Asset mit `actScriber` im Namen und `.zip`-Endung haben
+
+### Was ein Update NICHT triggert
+
+- **Draft Releases** — unsichtbar für `/releases/latest`
+- **Pre-Releases** — unsichtbar für `/releases/latest`
+- **Normaler `git push`** — Updater prüft nur Releases, nicht Commits
+
+---
+
+## Neues Update ausrollen — Schritt für Schritt
+
+### 1. Version erhöhen (alle 4 Dateien!)
+
+```python
+# config.py, build_nuitka.py, build_wix.py, build_msi.py
+# Alle auf die GLEICHE neue Version setzen, z.B.:
+"2.2.4"
+```
+
+### 2. Build erstellen
+
+```bash
+# Nuitka-Build (erstellt ZIP automatisch)
+python build_nuitka.py
+
+# MSI separat bauen (WiX muss installiert sein):
+wix build Package.wxs -arch x64 \
+  -ext WixToolset.Util.wixext \
+  -ext WixToolset.UI.wixext \
+  -b build\exe.win-amd64-3.12 \
+  -b . \
+  -o actScriber-X.X.X-win64.msi
+```
+
+**Output:**
+- `actScriber-X.X.X-win64.zip` (66 MB) — für Auto-Updates
+- `actScriber-X.X.X-win64.msi` (51 MB) — für Erstinstallation
+
+### 3. Committen und pushen
+
+```bash
+git add config.py build_nuitka.py build_wix.py build_msi.py
+git commit -m "chore: bump version to X.X.X"
+git push origin main
+```
+
+### 4a. Update ausrollen (ZIP für bestehende Clients)
+
+```bash
+# ACHTUNG: Das triggert sofort Updates bei ALLEN Clients!
+gh release create vX.X.X \
+  actScriber-X.X.X-win64.zip \
+  --title "vX.X.X - Beschreibung" \
+  --notes "Changelog hier"
+```
+
+### 4b. Nur zum Testen hochladen (Draft — kein Auto-Update)
+
+```bash
+gh release create vX.X.X \
+  actScriber-X.X.X-win64.msi \
+  --draft \
+  --title "vX.X.X - Test" \
+  --notes "Interner Test"
+```
+
+---
+
+## Erstinstallation (neue Clients)
+
+```bash
+# MSI installieren (Admin-Rechte nötig)
+msiexec /i actScriber-X.X.X-win64.msi
+
+# Oder silent:
+msiexec /i actScriber-X.X.X-win64.msi /qn
+```
+
+Die MSI:
+- Installiert nach `C:\Program Files\act Scriber\`
+- Setzt User-Berechtigungen (für spätere ZIP-Updates ohne Admin)
+- Erstellt Desktop- und Startmenü-Shortcuts
+
+---
+
+## Installation (Entwicklung)
+
+```bash
+# Dependencies installieren
+pip install -r requirements.txt
+
+# App starten
+python main.py
+```
+
+### Build-Voraussetzungen
+
+```bash
+# Nuitka
+pip install nuitka ordered-set zstandard
+
+# .NET SDK (für WiX)
+winget install Microsoft.DotNet.SDK.8
+
+# WiX v6
+dotnet tool install --global wix
+wix extension add WixToolset.Util.wixext
+wix extension add WixToolset.UI.wixext
+```
+
+## API Handler Konfiguration
 
 ```python
 # In api_handler.py
@@ -55,122 +231,18 @@ USE_PROXY = True  # True = Proxy mit Usage-Tracking, False = Direkt zu Groq
 
 | Endpoint | Methode | Beschreibung |
 |----------|---------|--------------|
-| `/api/transcribe` | POST | Whisper Transkription (multipart/form-data) |
-| `/api/chat` | POST | LLM Chat Completion (JSON) |
-| `/api/usage` | GET | Admin Dashboard (HTML) |
+| `/api/transcribe` | POST | Whisper Transkription |
+| `/api/chat` | POST | LLM Chat Completion |
+| `/api/health` | GET | Warmup-Ping |
+| `/api/usage` | GET | Admin Dashboard |
 
-### User-Tracking
+## Groq Modelle
 
-Jeder Request enthält einen `X-User-ID` Header im Format `username@hostname`:
-```
-X-User-ID: matze@Maetzger
-```
-
-## Usage Dashboard
-
-**URL**: `https://actscriber-proxy.vercel.app/api/usage?key=actscriber-admin-2024`
-
-Features:
-- Requests/Tokens pro User
-- Modell-Statistiken
-- Fehler-Log mit Meldungen
-- Activity Log (letzte 20 Requests)
-- User-Detail-Ansicht (klickbar)
-- Auto-Refresh alle 30 Sekunden
-
-## Audio-Fallback-Logik
-
-Der `audio_handler.py` implementiert automatisches Fallback:
-
-1. **Bevorzugtes Gerät** (aus Config)
-2. **By-Name Fallback** (falls Gerät-ID sich geändert hat)
-3. **System-Default** (als letzter Fallback)
-
-Nützlich für Docking-Station-Szenarien wo sich Device-IDs ändern.
-
-### Sleep-Mode Recovery
-
-Die App prüft alle 10 Sekunden die Audio-Device-Gesundheit:
-- Erkennt wenn Mikrofon nach Energiesparmodus nicht mehr verfügbar ist
-- Versucht automatisch das Gerät neu zu initialisieren
-- Wechselt automatisch auf verfügbare Fallback-Geräte
-
-## Dark Mode
-
-Die App erkennt automatisch das Windows-Theme via Registry:
-```
-HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme
-```
-
-## Update-System
-
-- **Repo**: `CookEasy31/transcriber-refactor`
-- **Check-Intervall**: Alle 30 Minuten
-- **Erster Check**: 3 Sekunden nach App-Start
-- **Force Updates**: Release-Titel mit `[FORCE]` oder `[REQUIRED]`
-- **Download**: MSI-Installer aus GitHub Release Assets
-- **Auto-Restart**: App startet automatisch nach Update neu
-- **Keine Admin-Rechte**: User können selbst Updates durchführen
-
-### Version erhöhen
-
-**WICHTIG: Bei Multi-System-Entwicklung immer `git pull` vor Änderungen!**
-
-1. Version in **allen 4 Dateien** aktualisieren:
-```python
-# config.py (WICHTIGSTE - wird zur Laufzeit verwendet)
-APP_VERSION = "2.0.3"
-
-# build_nuitka.py
-VERSION = "2.0.3"
-
-# build_wix.py
-VERSION = "2.0.3"
-
-# build_msi.py
-VERSION = "2.0.3"
-```
-
-2. Build erstellen: `python build_wix.py` (oder `build_nuitka.py` mit MSVC)
-3. GitHub Release erstellen: `gh release create v2.0.3 actScriber-2.0.3-win64.msi --title "v2.0.3 - Titel"`
-4. Änderungen committen und pushen
-
-## Installation (Entwicklung)
-
-```bash
-# Dependencies installieren (uv bevorzugt)
-uv pip install -r requirements.txt
-
-# App starten
-python main.py
-```
-
-## Build (MSI Installer)
-
-```bash
-# Voraussetzungen:
-# - WiX Toolset v6 + Extensions:
-dotnet tool install --global wix
-wix extension add WixToolset.UI.wixext --global
-wix extension add WixToolset.Util.wixext --global
-
-# - cx_Freeze:
-pip install cx_Freeze
-
-# Build mit cx_Freeze (empfohlen - funktioniert mit Python 3.13)
-python build_wix.py
-
-# Alternativ: Build mit Nuitka (braucht Visual Studio Build Tools)
-python build_wix.py
-```
-
-Output: `actScriber-X.X.X-win64.msi` (~50 MB mit Nuitka, ~200 MB mit cx_Freeze)
-
-### Installation
-- **Installation nach**: `C:\Program Files\actScriber\`
-- **Admin-Rechte** nur bei Erstinstallation erforderlich
-- **Auto-Updates ohne Admin**: Ordner-Berechtigungen werden bei Installation gesetzt
-- User können selbstständig Updates durchführen
+| Modell | Verwendung |
+|--------|------------|
+| `whisper-large-v3` | Transkription |
+| `moonshotai/kimi-k2-instruct-0905` | LLM (Formatierung, Übersetzung) |
+| `llama-3.3-70b-versatile` | Fallback LLM |
 
 ## Environment Variables
 
@@ -187,226 +259,13 @@ SUPABASE_SERVICE_KEY=eyJ...
 ADMIN_KEY=actscriber-admin-2024
 ```
 
-## Proxy Deployment (Vercel)
+## Wichtige Regeln
 
-```bash
-cd actscriber-proxy
-
-# Login
-vercel login
-
-# Deploy
-vercel --prod
-
-# Environment Variables setzen
-echo -n "VALUE" | vercel env add VAR_NAME production
-```
-
-## Groq Modelle
-
-| Modell | Verwendung |
-|--------|------------|
-| `whisper-large-v3` | Transkription |
-| `moonshotai/kimi-k2-instruct-0905` | LLM (Formatierung, Übersetzung) |
-| `llama-3.3-70b-versatile` | Fallback LLM |
-
-## Bekannte Einschränkungen
-
-- Whisper API unterstützt keinen `user` Parameter direkt
-- Max 60 Sekunden Timeout pro Request (Vercel Limit)
-- Dashboard zeigt max 1000 Logs
-
-## Troubleshooting
-
-### "Invalid API Key" im Dashboard
-→ Supabase Service Key prüfen (muss JWT sein: `eyJ...`)
-
-### Transkription langsam
-→ Proxy-Latenz ~50-100ms, Region Frankfurt
-
-### Audio-Gerät nicht gefunden
-→ App nutzt automatisches Fallback, Log prüfen
+- **NIEMALS** `gh release create` ohne `--draft` wenn nicht explizit gewollt — das triggert sofort alle Clients!
+- **NIEMALS** Installationspfad ändern — bestehende Clients updaten dann ins Leere
+- **NIEMALS** Versions-Dateien einzeln ändern — immer alle 4 gleichzeitig
+- Draft Releases sind sicher (Clients sehen sie nicht)
 
 ## Lizenz
 
-Privates Repository - Interne Nutzung
-
----
-
-## SESSION-BERICHT 30.01.2026 (WICHTIG - BITTE LESEN!)
-
-### Was ist passiert
-
-1. **Update-Loop bei Clients** - Durch Wechsel des Installationspfades (LocalAppData → Program Files) entstand ein Loop:
-   - Alte Clients hatten App in `%LOCALAPPDATA%\actScriber\`
-   - Neue MSI (v2.0.3) installierte nach `C:\Program Files\actScriber\`
-   - Nach Update startete die ALTE App aus LocalAppData (Shortcut zeigte dorthin)
-   - Alte App sah wieder Update → Loop!
-
-2. **Notfall-Stopp** - Alle Releases v2.0.x wurden gelöscht. Aktuell ist **v1.4.0** das neueste Release.
-
-### Aktueller Stand
-
-| Datei | Version | Installationspfad |
-|-------|---------|-------------------|
-| `config.py` | 2.0.4 | - |
-| `build_wix.py` | 2.0.4 | `ProgramFiles64Folder` + `perMachine` |
-| `build_nuitka.py` | 2.0.4 | `ProgramFiles64Folder` + `perMachine` |
-| `updater.py` | - | Zeigt auf `PROGRAMFILES` |
-| GitHub Latest | **v1.4.0** | War `LocalAppDataFolder` |
-
-### PROBLEM: Inkonsistenz!
-
-- **Alte Clients**: App in `%LOCALAPPDATA%\actScriber\`
-- **Neue Build-Skripte**: Installieren nach `C:\Program Files\actScriber\`
-- **Das verursacht Chaos bei Updates!**
-
-### Was noch zu tun ist
-
-1. **Entscheidung treffen**: EIN Installationspfad für alle - entweder:
-   - `LocalAppData` (perUser, keine Admin-Rechte) - **funktionierte früher**
-   - `Program Files` (perMachine, Admin bei Install) - **aktuell in Build-Skripten**
-
-2. **Killswitch implementieren**: JSON-Datei auf GitHub die Updates global stoppen kann
-
-3. **Clients aufräumen**: Alte Installationen in LocalAppData UND Program Files entfernen
-
-4. **Sauberes Release**: Erst wenn alles konsistent ist!
-
-### WICHTIGE REGELN
-
-- **NIEMALS** `git push` oder `gh release create` ohne explizite User-Bestätigung!
-- **NIEMALS** Installationspfad ändern ohne Migration-Plan für bestehende Clients
-- Releases triggern sofort Updates bei ALLEN Clients!
-
-### Dateien die geändert wurden (nicht gepusht!)
-
-- `updater.py` - Auf ZIP-basierte Updates umgestellt (experimentell, nicht getestet)
-- Lokale MSI: `actScriber-2.0.4-win64.msi` (nicht releasen!)
-- Lokale ZIP: `actScriber-2.0.4-win64.zip` (nicht releasen!)
-
-### Nächste Session
-
-1. Überblick verschaffen über Client-Installationen
-2. Entscheidung: LocalAppData oder Program Files?
-3. Build-Skripte + updater.py konsistent machen
-4. Killswitch implementieren
-5. Sauber testen BEVOR Release
-
----
-
-## SESSION-BERICHT 03.02.2026
-
-### Was wurde gemacht
-
-#### 1. ZIP-basierte Updates implementiert (statt MSI-Extraktion)
-**Problem:** MSI-Extraktion via `msiexec /a` war unzuverlässig (Pfade nicht vorhersagbar).
-
-**Lösung:**
-- `updater.py` bevorzugt jetzt ZIP-Downloads
-- Extraktion via PowerShell `Expand-Archive` (zuverlässig, in Windows eingebaut)
-- MSI bleibt als Fallback
-
-#### 2. Robustes Update-Script mit taskkill
-**Problem:** "Unzulässiger SHARE-Vorgang" - App war beim Kopieren noch nicht beendet.
-
-**Lösung:** Neues Batch-Script mit:
-```batch
-[1/5] taskkill /F /IM actScriber.exe     # Aktiv beenden
-[2/5] Warte-Schleife (max 30 Sek)        # Sicherstellen dass Prozess weg
-[3/5] Expand-Archive / xcopy             # Dateien kopieren
-[4/5] Cleanup                            # Temp-Dateien löschen
-[5/5] App neu starten                    # Fertig
-```
-
-Plus: Schöne formatierte Ausgabe im CMD-Fenster für User.
-
-#### 3. Vercel Cold Start Prevention (Warmup)
-**Problem:** Erste API-Anfrage nach 10-15 Min Inaktivität war langsam (Cold Start).
-
-**Lösung:**
-- Neuer Endpoint: `GET /api/health` → `{"status": "warm"}`
-- Bei Hotkey-Druck: Fire-and-forget Ping (wenn letzter Ping > 9 Min her)
-- Läuft async im Hintergrund während User spricht
-- Vercel ist warm wenn Aufnahme fertig
-
-**Dateien geändert:**
-- `actscriber-proxy/api/health.py` (neu)
-- `api_handler.py` (`warmup_proxy_if_needed()`)
-- `main.py` (Warmup bei Hotkey-Druck)
-
-#### 4. Build-System erweitert
-`build_update.py` unterstützt jetzt:
-```bash
-python build_update.py 2.1.4           # Nur MSI
-python build_update.py 2.1.4 --zip     # Nur ZIP
-python build_update.py 2.1.4 --upload  # MSI + GitHub Upload
-python build_update.py 2.1.4 --zip --upload  # ZIP + GitHub Upload
-```
-
-### Aktueller Stand
-
-| Was | Version/Status |
-|-----|----------------|
-| `config.py` | 2.1.4 |
-| GitHub Latest | v1.4.0 (Kill-Switch von früher) |
-| GitHub Draft | v2.1.4 (für IT-Rollout) |
-| Vercel Proxy | Deployed mit /api/health |
-
-### Installationspfade (FINAL ENTSCHIEDEN)
-
-```
-Installation:    C:\Program Files\actScriber\     (Admin bei Install)
-                 → PermissionEx User="Users" GenericAll="yes"
-                 → User können danach ohne Admin updaten!
-
-Einstellungen:   %LOCALAPPDATA%\act Scriber\      (MIT Leerzeichen!)
-                 ├── settings.json
-                 ├── history.db
-                 └── updates\
-
-Alte Installation: %LOCALAPPDATA%\actScriber\     (OHNE Leerzeichen)
-                   → Muss bei Rollout gelöscht werden!
-```
-
-### v2.1.4 Release (Draft - nicht öffentlich)
-
-**Download:** https://github.com/CookEasy31/transcriber-refactor/releases/tag/untagged-8a5211fd905785f9d184
-
-**Enthält:**
-- ZIP-basierter Updater
-- Warmup für Vercel Cold Start
-- taskkill + Warte-Schleife für saubere Updates
-- Formatierte CMD-Ausgabe beim Update
-
-### IT-Rollout Plan
-
-```bash
-# 1. Deinstallieren (alle Clients)
-- "act Scriber" über Systemsteuerung entfernen
-- Ordner löschen: %LOCALAPPDATA%\actScriber\  (alte Installation)
-- NICHT löschen: %LOCALAPPDATA%\act Scriber\  (Einstellungen!)
-
-# 2. Installieren
-msiexec /i actScriber-2.1.4-win64.msi /qn
-
-# 3. Fertig
-- App in: C:\Program Files\actScriber\
-- Shortcuts auf Desktop + Startmenü
-- User-Rechte für künftige Updates gesetzt
-```
-
-### Nächste Schritte
-
-1. **IT-Rollout durchführen** (manuell via IT-Tool)
-2. **Testen** auf einem Client zuerst
-3. **Später:** Wenn Update gewünscht:
-   - Neue Version bauen (z.B. v2.1.5)
-   - ZIP erstellen und als GitHub Release veröffentlichen
-   - Clients laden automatisch herunter
-
-### Wichtige Regeln (unverändert)
-
-- **NIEMALS** `gh release create` ohne explizite User-Bestätigung
-- Draft Releases sind sicher (Clients sehen sie nicht)
-- Erst publizieren wenn IT-Rollout abgeschlossen
+Privates Repository - Interne Nutzung (act legal IT)
