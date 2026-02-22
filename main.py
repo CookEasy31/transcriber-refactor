@@ -25,7 +25,7 @@ from config import ConfigManager, LANGUAGES, TARGET_LANGUAGES, APP_NAME, APP_VER
 from audio_handler import AudioRecorder, NO_AUDIO_DETECTED
 from api_handler import APIHandler
 from data_handler import DataHandler
-from updater import check_for_updates, download_update, install_update
+from updater import check_for_updates, download_update, install_zip_update, install_msi_update
 
 # Lazy imports
 _pyperclip = None
@@ -278,70 +278,6 @@ class UpdateDownloadWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-
-# ═══════════════════════════════════════════════════════════════
-# FORCE UPDATE DIALOG
-# ═══════════════════════════════════════════════════════════════
-
-class ForceUpdateDialog(QDialog):
-    """Modal Dialog für erzwungene Updates - kann nicht geschlossen werden"""
-
-    def __init__(self, parent, version, release_notes):
-        super().__init__(parent)
-        self.setWindowTitle("Wichtiges Update erforderlich")
-        self.setMinimumWidth(450)
-        self.setModal(True)
-        # Fenster-Schließen verhindern
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
-
-        # Header
-        header = QLabel(f"Update auf Version {version}")
-        header.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        layout.addWidget(header)
-
-        # Info
-        info = QLabel("Ein wichtiges Update wird heruntergeladen und installiert.\nDie App wird automatisch neu gestartet.")
-        info.setFont(QFont("Segoe UI", 11))
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        # Release Notes (kurz)
-        if release_notes:
-            notes_preview = release_notes[:200] + "..." if len(release_notes) > 200 else release_notes
-            notes_label = QLabel(notes_preview)
-            notes_label.setFont(QFont("Segoe UI", 10))
-            notes_label.setStyleSheet(f"color: {COLORS['text_light']}; background: {COLORS['active_bg']}; padding: 10px; border-radius: 6px;")
-            notes_label.setWordWrap(True)
-            layout.addWidget(notes_label)
-
-        # Progress Bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("Herunterladen... %p%")
-        layout.addWidget(self.progress_bar)
-
-        # Status Label
-        self.status_label = QLabel("Verbinde mit Server...")
-        self.status_label.setFont(QFont("Segoe UI", 10))
-        self.status_label.setStyleSheet(f"color: {COLORS['text_light']};")
-        layout.addWidget(self.status_label)
-
-    def set_progress(self, percent):
-        self.progress_bar.setValue(percent)
-        if percent >= 100:
-            self.status_label.setText("Installation wird gestartet...")
-            self.progress_bar.setFormat("Fertig!")
-
-    def closeEvent(self, event):
-        # Schließen verhindern
-        event.ignore()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -866,9 +802,6 @@ class ACTScriber(QMainWindow):
     overlay_status_signal = Signal(str)
     transcription_signal = Signal(str)  # For starting transcription from hotkey thread
     no_audio_warning_signal = Signal()
-    # Signals for auto-updater
-    update_available_signal = Signal(dict)
-    force_update_signal = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -951,27 +884,22 @@ class ACTScriber(QMainWindow):
 
     def setup_auto_updater(self):
         """Initialisiert das Auto-Update-System"""
-        self.pending_update = None  # Speichert verfügbares Update
         self.update_check_worker = None
         self.update_download_worker = None
-        self.force_update_dialog = None
-
-        # Signals verbinden
-        self.update_available_signal.connect(self._on_update_available)
-        self.force_update_signal.connect(self._on_force_update)
+        self._pending_update_info = None
 
         # Erster Update-Check nach 3 Sekunden (App erst starten lassen)
         QTimer.singleShot(3000, self.check_for_updates_async)
 
         # Regelmäßiger Update-Check jede Minute
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.check_for_updates_async)
-        self.update_timer.start(60 * 1000)  # 1 Minute in ms
+        self.auto_update_timer = QTimer()
+        self.auto_update_timer.timeout.connect(self.check_for_updates_async)
+        self.auto_update_timer.start(60 * 1000)  # 1 Minute in ms
 
     def check_for_updates_async(self):
         """Startet Update-Check im Hintergrund"""
         if self.update_check_worker and self.update_check_worker.isRunning():
-            return  # Bereits ein Check aktiv
+            return
 
         self.update_check_worker = UpdateCheckWorker()
         self.update_check_worker.finished.connect(self._on_update_check_finished)
@@ -987,98 +915,43 @@ class ACTScriber(QMainWindow):
             print(f"[Updater] No update available (current: {result['current_version']})")
             return
 
+        if not result.get('download_url'):
+            print(f"[Updater] Update available but no download URL")
+            return
+
         print(f"[Updater] Update available: {result['current_version']} -> {result['latest_version']}")
 
-        self.pending_update = result
+        self._pending_update_info = result
+        self._start_silent_update(result)
 
-        # Alle Updates werden automatisch installiert (kein User-Klick nötig)
-        self.force_update_signal.emit(result)
-
-    def _on_update_available(self, update_info):
-        """Optionales Update verfügbar - UI in Settings aktualisieren"""
-        if hasattr(self, 'update_status_label'):
-            version = update_info.get('latest_version', '?')
-            self.update_status_label.setText(f"Version {version} verfügbar!")
-            self.update_status_label.setStyleSheet(f"color: {self.colors['success']}; font-weight: bold;")
-            self.update_btn.setVisible(True)
-            self.update_btn.setEnabled(True)
-
-    def _on_force_update(self, update_info):
-        """Force Update - Dialog zeigen und Update starten"""
-        if not update_info.get('download_url'):
-            QMessageBox.warning(self, "Update-Fehler", "Keine Download-URL gefunden.")
-            return
-
-        # Force Update Dialog erstellen
-        self.force_update_dialog = ForceUpdateDialog(
-            self,
-            update_info.get('latest_version', '?'),
-            update_info.get('release_notes', '')
-        )
-        self.force_update_dialog.show()
-
-        # Download starten
-        self._start_update_download(update_info['download_url'])
-
-    def _start_update_download(self, url):
-        """Startet den Update-Download"""
+    def _start_silent_update(self, update_info):
+        """Startet den Update-Download still im Hintergrund"""
         target_dir = os.path.join(APP_DATA_DIR, "updates")
 
-        self.update_download_worker = UpdateDownloadWorker(url, target_dir)
-        self.update_download_worker.progress.connect(self._on_download_progress)
-        self.update_download_worker.finished.connect(self._on_download_finished)
-        self.update_download_worker.error.connect(self._on_download_error)
+        self.update_download_worker = UpdateDownloadWorker(update_info['download_url'], target_dir)
+        self.update_download_worker.finished.connect(self._on_silent_download_finished)
+        self.update_download_worker.error.connect(self._on_silent_download_error)
         self.update_download_worker.start()
 
-    def _on_download_progress(self, percent):
-        """Download-Fortschritt aktualisieren"""
-        if self.force_update_dialog:
-            self.force_update_dialog.set_progress(percent)
+    def _on_silent_download_finished(self, file_path):
+        """Download abgeschlossen - Update anwenden"""
+        print(f"[Updater] Download complete: {file_path}")
+        self._apply_update(file_path)
 
-    def _on_download_finished(self, msi_path):
-        """Download abgeschlossen - Installation starten"""
-        print(f"[Updater] Download complete: {msi_path}")
-        if self.force_update_dialog:
-            self.force_update_dialog.set_progress(100)
-
-        # Kurz warten, dann Installation starten
-        QTimer.singleShot(1000, lambda: self._install_update(msi_path))
-
-    def _on_download_error(self, error):
-        """Download-Fehler behandeln"""
+    def _on_silent_download_error(self, error):
+        """Download-Fehler - nur loggen, kein Dialog"""
         print(f"[Updater] Download error: {error}")
-        if self.force_update_dialog:
-            self.force_update_dialog.close()
-        QMessageBox.critical(self, "Update-Fehler", f"Download fehlgeschlagen:\n{error}")
 
-    def _install_update(self, msi_path):
-        """Startet die MSI-Installation und beendet die App"""
+    def _apply_update(self, file_path):
+        """Wendet das Update an (ZIP oder MSI) und beendet die App"""
         try:
-            install_update(msi_path)
+            if file_path.endswith('.zip'):
+                install_zip_update(file_path)
+            else:
+                install_msi_update(file_path)
+            self.quit_app()
         except Exception as e:
-            QMessageBox.critical(self, "Update-Fehler", f"Installation fehlgeschlagen:\n{e}")
-
-    def start_manual_update(self):
-        """Manuelles Update aus den Einstellungen starten"""
-        if not self.pending_update or not self.pending_update.get('download_url'):
-            return
-
-        # Button deaktivieren
-        self.update_btn.setEnabled(False)
-        self.update_btn.setText("Wird heruntergeladen...")
-
-        # Progress-Dialog für manuelles Update
-        self.force_update_dialog = ForceUpdateDialog(
-            self,
-            self.pending_update.get('latest_version', '?'),
-            self.pending_update.get('release_notes', '')
-        )
-        self.force_update_dialog.setWindowFlags(
-            self.force_update_dialog.windowFlags() | Qt.WindowType.WindowCloseButtonHint
-        )  # Schließen erlauben bei manuellem Update
-        self.force_update_dialog.show()
-
-        self._start_update_download(self.pending_update['download_url'])
+            print(f"[Updater] Install error: {e}")
 
     def setup_ui(self):
         """Erstellt die UI"""
@@ -1934,22 +1807,12 @@ class ACTScriber(QMainWindow):
         version_label.setFont(QFont("Segoe UI", 11))
         update_row.addWidget(version_label)
 
-        self.update_status_label = QLabel("Keine Updates verfügbar")
+        self.update_status_label = QLabel("Updates werden automatisch installiert")
         self.update_status_label.setFont(QFont("Segoe UI", 11))
         self.update_status_label.setStyleSheet(f"color: {self.colors['text_light']};")
         update_row.addWidget(self.update_status_label)
 
         update_row.addStretch()
-
-        check_update_btn = self.create_action_button("Jetzt prüfen", "fa5s.sync", "outline")
-        check_update_btn.clicked.connect(self.check_for_updates_async)
-        update_row.addWidget(check_update_btn)
-
-        self.update_btn = self.create_action_button("Jetzt updaten", "fa5s.download", "success")
-        self.update_btn.clicked.connect(self.start_manual_update)
-        self.update_btn.setVisible(False)  # Erst sichtbar wenn Update verfügbar
-        update_row.addWidget(self.update_btn)
-
         update_layout.addLayout(update_row)
 
         content_layout.addWidget(update_card)
@@ -2792,6 +2655,8 @@ class ACTScriber(QMainWindow):
     def quit_app(self):
         """Beendet die App komplett"""
         try:
+            if hasattr(self, 'auto_update_timer'):
+                self.auto_update_timer.stop()
             if hasattr(self, 'audio_monitor_timer'):
                 self.audio_monitor_timer.stop()
             if hasattr(self, 'device_health_timer'):
@@ -3084,22 +2949,14 @@ class ACTScriber(QMainWindow):
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    # Single Instance Lock
-    LOCK_FILE = os.path.join(APP_DATA_DIR, ".lock")
-    if os.path.exists(LOCK_FILE):
-        try:
-            # Check if process is still running
-            with open(LOCK_FILE, "r") as f:
-                old_pid = int(f.read().strip())
-                import psutil
-                if psutil.pid_exists(old_pid):
-                    print(f"[System] App already running (PID {old_pid}). Exiting.")
-                    sys.exit(0)
-        except:
-             pass # Old lock or psutil not found, proceed and overwrite
-
-    with open(LOCK_FILE, "w") as f:
-        f.write(str(os.getpid()))
+    # Single Instance via Windows Named Mutex (crash-safe, no lock files)
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    ERROR_ALREADY_EXISTS = 183
+    mutex = kernel32.CreateMutexW(None, False, "Global\\actScriber_SingleInstance")
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        print("[System] App already running. Exiting.")
+        sys.exit(0)
 
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 11))
@@ -3109,9 +2966,4 @@ if __name__ == "__main__":
     window.show()
 
     exit_code = app.exec()
-    
-    # Cleanup Lock
-    if os.path.exists(LOCK_FILE):
-        os.remove(LOCK_FILE)
-        
     sys.exit(exit_code)

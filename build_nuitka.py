@@ -26,6 +26,7 @@ import subprocess
 import sys
 import os
 import shutil
+import zipfile
 from pathlib import Path
 import uuid
 import re
@@ -60,6 +61,7 @@ MAIN_SCRIPT = BASE_PATH / "main.py"
 
 # Output
 OUTPUT_MSI = f"{APP_NAME}-{VERSION}-win64.msi"
+OUTPUT_ZIP = f"{APP_NAME}-{VERSION}-win64.zip"
 BUILD_DIR = BASE_PATH / "build"
 NUITKA_OUTPUT = BUILD_DIR / f"{APP_NAME}.dist"
 
@@ -517,23 +519,35 @@ def run_wix_build(build_folder: Path):
     size_mb = msi_path.stat().st_size / (1024 * 1024)
     print(f"   OK MSI erstellt: {OUTPUT_MSI} ({size_mb:.1f} MB)")
 
+def create_zip(build_folder: Path):
+    """Erstellt ZIP-Datei aus dem Build-Ordner (flach, ohne Unterordner-Wrapper)"""
+    print_step(6, "Erstelle ZIP fuer Auto-Updates")
+
+    zip_path = BASE_PATH / OUTPUT_ZIP
+
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for item in build_folder.rglob("*"):
+            if item.is_file():
+                arcname = item.relative_to(build_folder)
+                zf.write(item, arcname)
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"   OK ZIP erstellt: {OUTPUT_ZIP} ({size_mb:.1f} MB)")
+
 def print_summary():
     msi_path = BASE_PATH / OUTPUT_MSI
+    zip_path = BASE_PATH / OUTPUT_ZIP
 
     print("\n" + "=" * 70)
     print("  BUILD ERFOLGREICH!")
     print("=" * 70)
     print(f"""
-  Erstellte Datei:
+  Erstellte Dateien:
      {msi_path}
+     {zip_path}
 
-  Features dieser MSI:
-     - Installiert nach: C:\\Program Files\\{APP_NAME}\\
-     - Admin-Rechte nur bei Erstinstallation noetig
-     - Auto-Updates OHNE Admin (Ordner-Berechtigungen gesetzt)
-     - Kompiliert mit Nuitka (schneller als cx_Freeze)
-     - GUI-Installer mit Willkommens-Dialog
-     - Automatisches Schliessen der App bei Updates
+  MSI: Erstinstallation (GUI-Installer, Admin-Rechte)
+  ZIP: Auto-Updates (silent, kein Admin noetig)
 
   Installation:
      Doppelklick auf {OUTPUT_MSI}
@@ -554,6 +568,7 @@ def main():
     create_env_file(build_folder)
     generate_wxs(build_folder)
     run_wix_build(build_folder)
+    create_zip(build_folder)
     print_summary()
 
 if __name__ == "__main__":
