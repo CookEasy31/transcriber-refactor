@@ -6,7 +6,7 @@ from cx_Freeze import setup, Executable
 # --- KONFIGURATION ---
 APP_NAME = "actScriber"
 DESCRIPTION = "act Scriber - AI Transcriber"
-VERSION = "2.2.0"
+VERSION = "2.2.2"
 AUTHOR = "act legal IT"
 
 # Assets befinden sich im selben Verzeichnis wie dieses Skript
