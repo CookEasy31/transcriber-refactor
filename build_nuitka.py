@@ -36,7 +36,7 @@ import hashlib
 # KONFIGURATION
 # ==============================================================================
 
-VERSION = "2.2.4"
+VERSION = "2.2.5"
 APP_NAME = "actScriber"
 APP_DISPLAY_NAME = "act Scriber"
 MANUFACTURER = "act legal IT"

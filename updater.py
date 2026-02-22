@@ -277,9 +277,11 @@ Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyConti
     with open(script_path, 'w', encoding='utf-8') as f:
         f.write(ps_script)
 
-    # PowerShell komplett unsichtbar starten
+    # PowerShell unsichtbar starten (CREATE_NO_WINDOW erstellt eine versteckte Console)
+    # WICHTIG: NICHT DETACHED_PROCESS verwenden! PowerShell ist eine Console-App
+    # und braucht eine Console. DETACHED_PROCESS entfernt die Console komplett,
+    # wodurch das Script nie ausgeführt wird.
     CREATE_NO_WINDOW = 0x08000000
-    DETACHED_PROCESS = 0x00000008
 
     subprocess.Popen(
         [
@@ -289,7 +291,7 @@ Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyConti
             '-WindowStyle', 'Hidden',
             '-File', script_path
         ],
-        creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+        creationflags=CREATE_NO_WINDOW,
         close_fds=True
     )
 
@@ -318,8 +320,9 @@ del "%~f0"
     with open(batch_path, 'w') as f:
         f.write(batch_content)
 
+    # WICHTIG: Kein DETACHED_PROCESS! Console-Apps (cmd, powershell) brauchen eine Console.
     subprocess.Popen(
         ['cmd', '/c', batch_path],
         shell=False,
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        creationflags=subprocess.CREATE_NO_WINDOW
     )
