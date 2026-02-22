@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QDialog, QDialogButtonBox, QFormLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QTimer
-from PySide6.QtGui import QFont, QColor, QIcon, QAction, QPixmap
+from PySide6.QtGui import QFont, QColor, QIcon, QAction, QPixmap, QPainter, QBrush, QPen
 import qtawesome as qta
 
 # Import existing modules
@@ -462,66 +462,151 @@ class CustomButtonManagerDialog(QDialog):
 # OVERLAY WINDOW
 # ═══════════════════════════════════════════════════════════════
 
+class OverlayStatusWidget(QWidget):
+    """Custom Widget das einen Kreis mit Pegel-Animation und Icon zeichnet"""
+
+    STATUS_CONFIG = {
+        "idle": {"icon": "fa5s.circle", "icon_color": "#9CA3AF", "bg": "#F3F4F6", "fg": "#F3F4F6"},
+        "recording": {"icon": "fa5s.microphone", "icon_color": "#FFFFFF", "bg": "#7F1D1D", "fg": "#DC2626"},
+        "processing": {"icon": "fa5s.spinner", "icon_color": "#FFFFFF", "bg": "#2563EB", "fg": "#2563EB"},
+        "success": {"icon": "fa5s.check", "icon_color": "#FFFFFF", "bg": "#059669", "fg": "#059669"},
+        "error": {"icon": "fa5s.exclamation-triangle", "icon_color": "#FFFFFF", "bg": "#DC2626", "fg": "#DC2626"},
+        "aborted": {"icon": "fa5s.times", "icon_color": "#FFFFFF", "bg": "#6B7280", "fg": "#6B7280"},
+    }
+
+    def __init__(self, size=66, icon_size=32, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._size = size
+        self._icon_size = icon_size
+        self._status = "idle"
+        self._rms_level = 0.0  # Smooth-interpolierter Pegel (0.0 - 1.0)
+        self._icon_pixmap = None
+        self._bg_color = QColor("#F3F4F6")
+        self._fg_color = QColor("#F3F4F6")
+        self._update_icon("idle")
+
+    def set_status(self, status):
+        self._status = status
+        cfg = self.STATUS_CONFIG.get(status, self.STATUS_CONFIG["idle"])
+        self._bg_color = QColor(cfg["bg"])
+        self._fg_color = QColor(cfg["fg"])
+        self._update_icon(status)
+        if status != "recording":
+            self._rms_level = 0.0
+        self.update()
+
+    def _update_icon(self, status):
+        cfg = self.STATUS_CONFIG.get(status, self.STATUS_CONFIG["idle"])
+        icon = qta.icon(cfg["icon"], color=cfg["icon_color"])
+        self._icon_pixmap = icon.pixmap(self._icon_size, self._icon_size)
+
+    def set_rms_level(self, level):
+        """Setzt den interpolierten RMS-Pegel (0.0 - 1.0)"""
+        self._rms_level = max(0.0, min(1.0, level))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        center_x = self._size / 2
+        center_y = self._size / 2
+        max_radius = (self._size - 2) / 2  # Kleiner Rand
+
+        # 1. Basis-Kreis (dunklere Farbe, immer volle Groesse)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(self._bg_color))
+        painter.drawEllipse(int(center_x - max_radius), int(center_y - max_radius),
+                           int(max_radius * 2), int(max_radius * 2))
+
+        # 2. Pegel-Kreis (hellere Farbe, Radius proportional zum RMS)
+        if self._status == "recording" and self._rms_level > 0.01:
+            min_radius = max_radius * 0.3  # Minimaler Pegel-Radius
+            pegel_radius = min_radius + (max_radius - min_radius) * self._rms_level
+            painter.setBrush(QBrush(self._fg_color))
+            painter.drawEllipse(int(center_x - pegel_radius), int(center_y - pegel_radius),
+                               int(pegel_radius * 2), int(pegel_radius * 2))
+
+        # 3. Icon in der Mitte (logische Groesse fuer HiDPI)
+        if self._icon_pixmap:
+            dpr = self._icon_pixmap.devicePixelRatio()
+            logical_w = self._icon_pixmap.width() / dpr
+            logical_h = self._icon_pixmap.height() / dpr
+            ix = int(center_x - logical_w / 2)
+            iy = int(center_y - logical_h / 2)
+            painter.drawPixmap(ix, iy, self._icon_pixmap)
+
+        painter.end()
+
+
 class OverlayWindow(QWidget):
     """Kleines Overlay-Fenster das den Status anzeigt"""
 
-    def __init__(self):
+    def __init__(self, recorder=None):
         super().__init__()
+        self._recorder = recorder
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(60, 60)
+        self.setFixedSize(80, 80)
 
         screen = QApplication.primaryScreen().geometry()
-        self.move(screen.width() - 80, screen.height() - 120)
+        self.move(screen.width() - 100, screen.height() - 140)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.status_label = QLabel()
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setFixedSize(50, 50)
-        layout.addWidget(self.status_label)
+        self.status_widget = OverlayStatusWidget(size=66, icon_size=32)
+        layout.addWidget(self.status_widget, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._current_status = "idle"
-        self.set_status("idle")
+        self._smooth_rms = 0.0
 
         self.hide_timer = QTimer()
         self.hide_timer.timeout.connect(self.hide)
         self.hide_timer.setSingleShot(True)
 
+        # Pegel-Animation Timer (nur aktiv waehrend recording)
+        self._pegel_timer = QTimer()
+        self._pegel_timer.timeout.connect(self._update_pegel)
+        self._pegel_timer.setInterval(30)
+
+        self.set_status("idle")
+
+    def _update_pegel(self):
+        """Liest RMS vom Recorder und interpoliert smooth"""
+        if self._recorder is None:
+            return
+        raw_rms = getattr(self._recorder, 'current_rms', 0.0)
+        # Normalisiere: typische Werte ~0.001-0.02 bei Sprache, auf 0.0-1.0 mappen
+        target = min(1.0, raw_rms * 50.0)
+        # Smooth interpolation
+        self._smooth_rms += (target - self._smooth_rms) * 0.3
+        self.status_widget.set_rms_level(self._smooth_rms)
+
     def set_status(self, status):
         self._current_status = status
+        self.status_widget.set_status(status)
 
-        status_config = {
-            "idle": {"icon": "fa5s.circle", "color": "#9CA3AF", "bg": "#F3F4F6"},
-            "recording": {"icon": "fa5s.microphone", "color": "#FFFFFF", "bg": "#DC2626"},
-            "processing": {"icon": "fa5s.spinner", "color": "#FFFFFF", "bg": "#2563EB"},
-            "success": {"icon": "fa5s.check", "color": "#FFFFFF", "bg": "#059669"},
-            "error": {"icon": "fa5s.exclamation-triangle", "color": "#FFFFFF", "bg": "#DC2626"},
-            "aborted": {"icon": "fa5s.times", "color": "#FFFFFF", "bg": "#6B7280"},
-        }
-
-        cfg = status_config.get(status, status_config["idle"])
-
-        self.status_label.setStyleSheet(f"""
-            background-color: {cfg['bg']};
-            border-radius: 25px;
-        """)
-
-        icon = qta.icon(cfg['icon'], color=cfg['color'])
-        self.status_label.setPixmap(icon.pixmap(24, 24))
-
-        if status in ["recording", "processing"]:
+        if status == "recording":
             self.show()
             self.hide_timer.stop()
+            self._smooth_rms = 0.0
+            self._pegel_timer.start()
+        elif status == "processing":
+            self.show()
+            self.hide_timer.stop()
+            self._pegel_timer.stop()
         elif status in ["success", "error", "aborted"]:
             self.show()
             self.hide_timer.start(2000)
+            self._pegel_timer.stop()
         else:
+            self._pegel_timer.stop()
             self.hide()
 
 
@@ -851,7 +936,7 @@ class ACTScriber(QMainWindow):
         self.setup_system_tray()
 
         # Setup Overlay
-        self.overlay = OverlayWindow()
+        self.overlay = OverlayWindow(self.recorder)
 
         # Setup Audio Level Monitor
         self.setup_audio_monitor()
