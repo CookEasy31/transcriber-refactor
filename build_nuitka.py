@@ -487,8 +487,13 @@ def generate_wxs(build_folder: Path) -> str:
     print(f"   OK Package.wxs generiert")
     return str(wxs_path)
 
-def run_wix_build(build_folder: Path):
+def run_wix_build(build_folder: Path) -> bool:
     print_step(5, "Erstelle MSI (WiX)")
+
+    # Prüfe ob WiX verfügbar ist
+    if not shutil.which("wix"):
+        print("   UEBERSPRUNGEN: WiX nicht installiert (nur ZIP wird erstellt)")
+        return False
 
     cmd = [
         "wix", "build",
@@ -509,15 +514,16 @@ def run_wix_build(build_folder: Path):
         print("   FEHLER: WiX build fehlgeschlagen!")
         print("\n   STDERR:")
         print(result.stderr[:2000] if result.stderr else "(leer)")
-        sys.exit(1)
+        return False
 
     msi_path = BASE_PATH / OUTPUT_MSI
     if not msi_path.exists():
         print("   FEHLER: MSI wurde nicht erstellt!")
-        sys.exit(1)
+        return False
 
     size_mb = msi_path.stat().st_size / (1024 * 1024)
     print(f"   OK MSI erstellt: {OUTPUT_MSI} ({size_mb:.1f} MB)")
+    return True
 
 def create_zip(build_folder: Path):
     """Erstellt ZIP-Datei aus dem Build-Ordner (flach, ohne Unterordner-Wrapper)"""
@@ -534,14 +540,16 @@ def create_zip(build_folder: Path):
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     print(f"   OK ZIP erstellt: {OUTPUT_ZIP} ({size_mb:.1f} MB)")
 
-def print_summary():
-    msi_path = BASE_PATH / OUTPUT_MSI
+def print_summary(has_msi: bool):
     zip_path = BASE_PATH / OUTPUT_ZIP
 
     print("\n" + "=" * 70)
     print("  BUILD ERFOLGREICH!")
     print("=" * 70)
-    print(f"""
+
+    if has_msi:
+        msi_path = BASE_PATH / OUTPUT_MSI
+        print(f"""
   Erstellte Dateien:
      {msi_path}
      {zip_path}
@@ -555,21 +563,35 @@ def print_summary():
   Silent Install:
      msiexec /i "{OUTPUT_MSI}" /qn
 """)
+    else:
+        print(f"""
+  Erstellte Datei:
+     {zip_path}
+
+  ZIP: Auto-Updates (silent, kein Admin noetig)
+
+  Hinweis: MSI wurde nicht erstellt (WiX nicht verfuegbar)
+""")
 
 def main():
     print_header()
 
-    if not LICENSE_PATH.exists():
-        print(f"   WARNUNG: license.rtf nicht gefunden!")
-        sys.exit(1)
-
     clean_build()
     build_folder = run_nuitka()
     create_env_file(build_folder)
-    generate_wxs(build_folder)
-    run_wix_build(build_folder)
+
+    has_msi = False
+    if LICENSE_PATH.exists():
+        generate_wxs(build_folder)
+        has_msi = run_wix_build(build_folder)
+    else:
+        print_step(4, "Generiere WiX-Konfiguration")
+        print("   UEBERSPRUNGEN: license.rtf nicht gefunden")
+        print_step(5, "Erstelle MSI (WiX)")
+        print("   UEBERSPRUNGEN: Keine WiX-Konfiguration")
+
     create_zip(build_folder)
-    print_summary()
+    print_summary(has_msi)
 
 if __name__ == "__main__":
     main()
