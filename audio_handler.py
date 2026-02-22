@@ -4,6 +4,7 @@ import time
 import wave
 import struct
 import shutil
+import threading
 from collections import deque
 from config import APP_DATA_DIR
 
@@ -50,6 +51,8 @@ class AudioRecorder:
         self.device_index = device_index
         self.audio_sensitivity = audio_sensitivity if audio_sensitivity else MIN_AUDIO_RMS
         self.current_rms = 0
+        # Thread-safety lock for recording state
+        self._recording_lock = threading.Lock()
         self.monitor_stream = None
         # Unified stream for zero-latency recording
         self._unified_stream = None
@@ -227,11 +230,12 @@ class AudioRecorder:
             self._pre_buffer.append(indata.copy())
 
             # Nur bei aktiver Aufnahme Daten speichern
-            if self.is_recording:
-                if len(self.recording) * frames / self.sample_rate < MAX_DURATION_SECONDS:
-                    self.recording.append(indata.copy())
-                else:
-                    self.is_recording = False
+            with self._recording_lock:
+                if self.is_recording:
+                    if len(self.recording) * frames / self.sample_rate < MAX_DURATION_SECONDS:
+                        self.recording.append(indata.copy())
+                    else:
+                        self.is_recording = False
 
     def _restart_unified_stream(self):
         """Startet den unified stream (nach Device-Wechsel etc.)"""
@@ -322,56 +326,57 @@ class AudioRecorder:
         self.current_rms = 0
 
     def start_recording(self, device_index=None):
-        """Startet Aufnahme - nutzt unified stream für sofortigen Start"""
-        if self.is_recording:
-            return
+        """Startet Aufnahme - nutzt unified stream fuer sofortigen Start"""
+        with self._recording_lock:
+            if self.is_recording:
+                return
 
-        # Prepend pre-buffer (last 500ms before button press)
-        if self._pre_buffer:
-            self.recording = list(self._pre_buffer)  # Copy pre-buffer
-            pre_samples = sum(len(chunk) for chunk in self.recording)
-            print(f"[Audio] Pre-buffer: {pre_samples} samples ({pre_samples/self.sample_rate*1000:.0f}ms)")
-        else:
-            self.recording = []
+            # Prepend pre-buffer (last 500ms before button press)
+            if self._pre_buffer:
+                self.recording = list(self._pre_buffer)
+                pre_samples = sum(len(chunk) for chunk in self.recording)
+                print(f"[Audio] Pre-buffer: {pre_samples} samples ({pre_samples/self.sample_rate*1000:.0f}ms)")
+            else:
+                self.recording = []
 
-        self.start_time = time.time() - (self._pre_buffer_ms / 1000)  # Adjust for pre-buffer
+            self.start_time = time.time() - (self._pre_buffer_ms / 1000)
+            self.is_recording = True
 
-        # Wenn unified stream läuft: SOFORT aufnehmen (zero latency!)
+        # Wenn unified stream laeuft: SOFORT aufnehmen (zero latency!)
         if self._unified_stream:
             print("[Audio] INSTANT recording start (unified stream active)")
-            self.is_recording = True
             return
 
         # Fallback: Unified stream nicht aktiv, starte ihn mit Recording
         print(f"[Audio] Starting unified stream for recording on device: {device_index}")
         self._start_unified_stream(device_index)
-        self.is_recording = True
 
     def stop_recording(self):
-        """Stoppt Aufnahme - lässt unified stream weiterlaufen für nächste Aufnahme"""
+        """Stoppt Aufnahme - laesst unified stream weiterlaufen fuer naechste Aufnahme"""
         print(f"[Audio] stop_recording called. is_recording={self.is_recording}, unified_stream={self._unified_stream is not None}")
-        
-        if not self.is_recording:
-            print("[Audio] Early exit: Not recording")
-            return None
 
-        # Aufnahme stoppen, aber Stream NICHT beenden (für nächste Aufnahme bereit)
-        self.is_recording = False
+        with self._recording_lock:
+            if not self.is_recording:
+                print("[Audio] Early exit: Not recording")
+                return None
+            self.is_recording = False
+            recording_snapshot = list(self.recording)  # Snapshot under lock
+            self.recording = []
 
         duration = time.time() - self.start_time
         print(f"[Audio] Recording duration: {duration:.2f}s (min: {MIN_DURATION_SECONDS}s)")
-        
+
         if duration < MIN_DURATION_SECONDS:
             print(f"[Audio] Recording too short ({duration:.2f}s < {MIN_DURATION_SECONDS}s)")
             return None
 
-        if not self.recording:
+        if not recording_snapshot:
             print("[Audio] No recording data captured!")
             return None
 
         np = _get_numpy()
-        
-        recording_array = np.concatenate(self.recording, axis=0)
+
+        recording_array = np.concatenate(recording_snapshot, axis=0)
         total_duration = len(recording_array) / self.sample_rate
         print(f"[Audio] Total samples: {len(recording_array)}, duration: {total_duration:.2f}s")
 
