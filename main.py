@@ -88,6 +88,7 @@ def is_dark_mode():
 # Color Schemes - Modern Executive
 COLORS_LIGHT = {
     "primary": "#374151",
+    "primary_hover": "#4B5563",
     "accent": "#DC2626",
     "success": "#059669",
     "warning": "#D97706",
@@ -104,6 +105,7 @@ COLORS_LIGHT = {
 
 COLORS_DARK = {
     "primary": "#60A5FA",      # Helleres Blau für Dark Mode
+    "primary_hover": "#93C5FD",  # Helleres Blau für Hover
     "accent": "#F87171",       # Helleres Rot
     "success": "#34D399",      # Helleres Grün
     "warning": "#FBBF24",      # Helleres Orange
@@ -1300,7 +1302,7 @@ class ACTScriber(QMainWindow):
         self.quick_buttons_layout = QHBoxLayout()
         self.quick_buttons_layout.setSpacing(10)
 
-        self.email_btn = self.create_action_button("Als E-Mail formatieren", "fa5s.envelope", "success")
+        self.email_btn = self.create_action_button("Als E-Mail formatieren", "fa5s.envelope", "outline")
         self.email_btn.clicked.connect(lambda: self.refine_text("email"))
         self.quick_buttons_layout.addWidget(self.email_btn)
 
@@ -1338,7 +1340,7 @@ class ACTScriber(QMainWindow):
         apply_custom_btn.setIconSize(QSize(16, 16))
         apply_custom_btn.setFixedSize(42, 42)
         apply_custom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        apply_custom_btn.setObjectName("MicButton")
+        apply_custom_btn.setObjectName("SubmitButton")
         apply_custom_btn.setToolTip("Individuelle Anweisung anwenden")
         apply_custom_btn.clicked.connect(self.apply_custom_instruction)
         instruction_row.addWidget(apply_custom_btn)
@@ -2821,7 +2823,16 @@ class ACTScriber(QMainWindow):
                 border-radius: 21px;
             }}
             #MicButton:hover {{
-                background-color: {c['accent']};
+                background-color: {c['primary_hover']};
+            }}
+
+            #SubmitButton {{
+                background-color: {c['primary']};
+                border: none;
+                border-radius: 21px;
+            }}
+            #SubmitButton:hover {{
+                background-color: {c['primary_hover']};
             }}
 
             #AddButton {{
@@ -2842,15 +2853,19 @@ class ACTScriber(QMainWindow):
                 padding: 10px 20px;
             }}
             #ActionButton[button_style="primary"]:hover {{
-                background-color: {c['accent']};
+                background-color: {c['primary_hover']};
             }}
 
             #ActionButton[button_style="success"] {{
-                background-color: {c['success']};
-                color: white;
-                border: none;
+                background-color: transparent;
+                color: {c['primary']};
+                border: 2px solid {c['primary']};
                 border-radius: 8px;
-                padding: 10px 20px;
+                padding: 9px 19px;
+            }}
+            #ActionButton[button_style="success"]:hover {{
+                background-color: {c['active_bg']};
+                border-color: {c['primary_hover']};
             }}
 
             #ActionButton[button_style="outline"] {{
@@ -2862,6 +2877,7 @@ class ACTScriber(QMainWindow):
             }}
             #ActionButton[button_style="outline"]:hover {{
                 background-color: {c['active_bg']};
+                border-color: {c['primary_hover']};
             }}
 
             #ActionButton[button_style="ghost"] {{
